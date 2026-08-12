@@ -1,8 +1,8 @@
-# CLOSER v2 — Phase 1
+# CLOSER v2 — Phase 2
 
-CLOSER is a revenue and customer-conversation operating system for service businesses. This repository contains the Phase 1 foundation and one end-to-end path from inquiry to payment for appointment businesses and quote/job businesses.
+CLOSER is a revenue and customer-conversation operating system for service businesses. Phase 2 adds a safe, deterministic Smart WhatsApp Assistant Engine to the verified Phase 1 inquiry-to-payment foundation.
 
-This is an internal, local-only demo. It uses deterministic mock AI and messaging providers, fictional data, and versioned browser storage. It connects to no external API and contains no secrets.
+This is an internal, local-only engineering build. It uses fictional data, deterministic mock AI and messaging providers, and versioned browser storage. It connects to no external API and contains no secrets.
 
 ## Requirements
 
@@ -16,7 +16,7 @@ npm install
 npm run dev
 ```
 
-Vite prints the local URL, normally `http://localhost:5173`. Open `/demo` and use the business selector to move among Luma Aesthetics, Northstar Auto Detail, and BrightHome Services.
+Vite prints the local URL, normally `http://localhost:5173`. Open `/debug` for the Conversation Simulator or `/demo` for the Phase 1 business-flow controls. Use the business selector to switch among Luma Aesthetics, Northstar Auto Detail, and BrightHome Services.
 
 ## Quality commands
 
@@ -26,40 +26,44 @@ npm run typecheck
 npm run test
 npm run build
 npm run verify
+npm audit
 ```
 
-`npm run verify` runs lint, strict TypeScript checking, the full Vitest suite, and the production build in sequence.
+`npm run verify` runs lint, strict TypeScript checking, all Vitest tests, and the production build in sequence.
 
 ## Internal routes
 
 - `/demo` — tenant summary, scenario contacts, and current actions
-- `/inbox` — conversation list ordered by customer activity
-- `/customer/:id` — messages, assistant proposal, human control, and consent
-- `/appointments` — appointment creation, deposit, confirmation, completion, and balance
-- `/quotes` — quote creation/acceptance, job state, deposit, completion, and balance
-- `/debug` — tenant-scoped raw data, RevenueEvents, and demo reset
+- `/inbox` — WhatsApp-first conversations and the one action needing attention
+- `/customer/:id` — message simulation, grounded assistant proposal, human control, and consent
+- `/appointments` — appointment, deposit, confirmation, completion, and balance controls
+- `/quotes` — quote/job, deposit, scheduling, completion, and balance controls
+- `/debug` — Conversation Simulator, tool results, memory, follow-ups, handoffs, financial events, raw tenant state, and reset
 
-## Architecture
+## Architecture and trust boundary
 
-Domain entities and rules are pure TypeScript. `CloserService` is the application boundary that validates use cases and is the only layer allowed to coordinate mutations. Repositories are tenant scoped; browser persistence sits behind `DatabasePort` and `StoragePort`. AI and messaging are ports with deterministic mocks. React reads state through `CloserProvider` and never accesses `localStorage` or implements business rules.
+Domain entities and rules are pure TypeScript. `CloserService` is the application boundary and the only layer allowed to coordinate mutations. Focused conversation services infer stages, retrieve knowledge, normalize customer memory, validate provider decisions, execute safe tools, and schedule deterministic follow-ups.
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/DOMAIN_RULES.md](docs/DOMAIN_RULES.md), and [docs/FINANCIAL_RULES.md](docs/FINANCIAL_RULES.md).
+The AI provider is untrusted and has no repository, network, clock, or mutation access. The application reconstructs auto-sent Level 1/2 replies from validated knowledge/tool results. Appointment, quote, deposit, payment, and scheduling changes are proposals until the existing application use cases validate them. React never accesses `localStorage` or implements business rules.
+
+See [Architecture](docs/ARCHITECTURE.md), [Conversation Engine](docs/CONVERSATION_ENGINE.md), [Assistant Safety](docs/ASSISTANT_SAFETY.md), [Assistant Tools](docs/ASSISTANT_TOOLS.md), and [Financial Rules](docs/FINANCIAL_RULES.md).
 
 ## Local data
 
-The schema is stored under `closer-v2:database` in `localStorage`, validated on load, and reset to a deterministic seed if corrupt. Use **Debug → Reset demo data** to restore all three businesses. No real customer data is included.
+Schema v2 is stored under `closer-v2:database` in `localStorage`. A valid Phase 1 schema is migrated; invalid or corrupt data falls back to the deterministic seed. Use **Debug → Reset scenarios** to restore all three tenants. No real customer data is included.
 
-## Back up to a remote
+## Remote backup
 
-Local Git is not a backup. After creating an empty private repository with your chosen provider, add and push it explicitly:
+Local Git is not a backup. This repository already tracks `origin/main`; confirm it after each verified phase:
 
 ```bash
-git remote add origin <your-private-repository-url>
-git push -u origin main
+git remote -v
+git status --short --branch
+git push
 ```
 
-Confirm the remote first with `git remote -v`. Never commit `.env` files, credentials, tokens, customer exports, or production data. This project intentionally does not create a remote repository automatically.
+Never commit `.env` files, credentials, tokens, customer exports, or production data.
 
-## Scope boundary
+## Deliberate exclusions
 
-Phase 1 does not include a polished UI, real WhatsApp/Meta/Instagram, a calendar or payment gateway, production AI, analytics dashboards, accounting, inventory, permissions, mobile apps, or deployment. Those integrations should replace ports without changing domain rules.
+Phase 2 does not include production AI, real WhatsApp/Meta/Instagram, a backend, authentication, background workers, calendar/payment integrations, deployment, or final product design. Follow-ups are inspectable scheduled records, not timers. The deterministic language matcher is a safety/test engine, not an NLP substitute.

@@ -8,6 +8,7 @@ import type {
   ConsentRecord,
   Contact,
   Conversation,
+  CustomerMemoryItem,
   EntityCollectionName,
   HumanHandoff,
   Job,
@@ -17,12 +18,14 @@ import type {
   Payment,
   Quote,
   RevenueEvent,
+  ScheduledFollowUp,
   Service,
   TeamMember,
   TenantEntity,
 } from '../domain/entities';
+import type { ConversationDecisionRecord } from '../types/assistant';
 
-export const SCHEMA_VERSION = 1 as const;
+export const SCHEMA_VERSION = 2 as const;
 
 export interface DatabaseSchema {
   schemaVersion: typeof SCHEMA_VERSION;
@@ -45,6 +48,9 @@ export interface DatabaseSchema {
   consentRecords: ConsentRecord[];
   humanHandoffs: HumanHandoff[];
   revenueEvents: RevenueEvent[];
+  customerMemory: CustomerMemoryItem[];
+  scheduledFollowUps: ScheduledFollowUp[];
+  assistantDecisionRecords: ConversationDecisionRecord[];
 }
 
 export type EntityByCollection = {
@@ -79,6 +85,9 @@ export interface RepositoryBundle {
   consentRecords: TenantRepository<ConsentRecord>;
   humanHandoffs: TenantRepository<HumanHandoff>;
   revenueEvents: TenantRepository<RevenueEvent>;
+  customerMemory: TenantRepository<CustomerMemoryItem>;
+  scheduledFollowUps: TenantRepository<ScheduledFollowUp>;
+  assistantDecisionRecords: TenantRepository<ConversationDecisionRecord>;
 }
 
 export interface StoragePort {

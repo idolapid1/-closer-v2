@@ -4,8 +4,8 @@ import type { TenantRepository } from './contracts';
 import { createHarness } from '../test/harness';
 
 describe('tenant-scoped repositories', () => {
-  it('prevents cross-business reads for every required major entity', () => {
-    const { database } = createHarness();
+  it('prevents cross-business reads for every required major entity', async () => {
+    const { database, service } = createHarness();
     const repositories = database.repositories;
     const clinicId = 'biz-clinic';
     const detailingId = 'biz-detailing';
@@ -28,6 +28,14 @@ describe('tenant-scoped repositories', () => {
     hidden(repositories.jobs, detailingId, clinicId);
     hidden(repositories.payments, clinicId, detailingId);
     hidden(repositories.businessKnowledge, clinicId, detailingId);
+    await service.receiveCustomerMessage(
+      clinicId,
+      'biz-clinic-conversation-new',
+      'How much is the signature facial?',
+    );
+    hidden(repositories.customerMemory, clinicId, detailingId);
+    hidden(repositories.scheduledFollowUps, clinicId, detailingId);
+    hidden(repositories.assistantDecisionRecords, clinicId, detailingId);
   });
 
   it('rejects a write whose entity belongs to another business', () => {

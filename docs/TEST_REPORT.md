@@ -1,31 +1,39 @@
-# Test report
+# Phase 2 test report
 
-Final status: **passed** on 2026-08-12.
+Status: **passed** on 2026-08-13.
 
-The automated suite covers tenant isolation, active/closed NextAction behavior, customer-message updates, safe knowledge, missing-information collection, sensitive and low-confidence handoff, takeover/resume, consent, double booking, appointment deposits, quote acceptance/job creation, balances, completion versus collection, refunds, RevenueEvent idempotency, persistence/corruption fallback, demo reset, required routes, business switching, and assistant proposal rendering.
+The suite covers all Phase 1 invariants plus structured decisions, knowledge grounding, vertical qualification, stage inference, customer memory/corrections/conflicts, formal tools, autonomy boundaries, handoff metadata, deterministic follow-ups, duplicate message delivery, schema migration, simulator behavior, malicious-provider output, prompt injection, cross-tenant requests, false payment claims, and unsupported booking.
 
-Run the complete gate with:
+Run:
 
 ```bash
+npm run lint
+npm run typecheck
+npm run test
+npm run build
 npm run verify
+npm audit
 ```
 
-## Exact final results
+## Exact automated result
 
-- `npm run lint`: exit 0; ESLint reported no errors or warnings.
-- `npm run typecheck`: exit 0; `tsc --noEmit` reported no errors.
-- `npm run test`: exit 0; 8 test files passed, 34 tests passed.
-- `npm run build`: exit 0; Vite 7.3.6 transformed 61 modules and produced `dist/index.html` plus CSS and JavaScript assets (largest asset 285.99 kB, 89.76 kB gzip).
-- `npm run verify`: exit 0; lint, typecheck, 34 tests, and build all passed in sequence.
-- `npm audit`: 0 known vulnerabilities in the locked 339-package dependency tree.
+- `npm run lint`: exit 0; no ESLint errors or warnings.
+- `npm run typecheck`: exit 0; strict `tsc --noEmit` reported no errors.
+- `npm run test`: exit 0; 9 test files and 78 tests passed.
+- `npm run build`: exit 0; Vite 7.3.6 transformed 69 modules and emitted `dist/index.html`, 3.80 kB CSS (1.32 kB gzip), and 345.56 kB JavaScript (105.70 kB gzip).
+- `npm run verify`: exit 0; lint, strict TypeScript, all 78 tests, and the production build passed in sequence.
+- `npm audit`: exit 0; found 0 vulnerabilities.
 
 ## Manual browser QA
 
-- Loaded `/demo`, `/inbox`, `/customer/:id`, `/appointments`, `/quotes`, and `/debug` after a clean server restart.
-- Switched among clinic, auto-detailing, and home-services tenants; cross-tenant customer routes failed closed.
-- Completed an appointment flow: create → deposit → confirm → complete → collect balance; balance moved 420.00 → 315.00 → 0.00 and completion remained separate from cash collection.
-- Completed a quote/job flow: draft → send → accept/create job → deposit → ready to schedule → schedule → complete → collect balance; balance moved 1,000.00 → 750.00 → 0.00.
-- Verified manual takeover disables automation, explicit resume restores it, opt-out persists, and the UI blocks a marketing send.
-- Verified a safe-hours inquiry displays a structured assistant proposal and updates the NextAction.
-- Inspected booked, completed, collected-deposit, and collected-balance RevenueEvents with causation and correlation IDs.
-- Browser console after the final restart and route pass: no warnings or errors.
+- Loaded `/demo`, `/inbox`, `/customer/:id`, `/appointments`, `/quotes`, and `/debug`.
+- Beauty: configured price → missing date → validated appointment options.
+- Auto detailing: service details → vehicle facts → photo request → quote-ready.
+- Home services: generic job → refined leak/location/urgency/photos → quote-ready; this caught and fixed a memory-refinement regression.
+- Sensitive clinic question → Human Takeover; a customer message during takeover produced no outgoing assistant message; explicit Resume AI restored automation.
+- Opt-out persisted; business switching changed tenant/customer/service state.
+- Appointment: balance 420 → 315 after deposit → remained 315 at completion → 0 after collection.
+- Quote/job: draft → sent → accepted/job → deposit → scheduled → completed with balance unchanged → collected to 0.
+- Quote follow-up and completed-work outstanding-balance follow-up/action were visible in `/debug`.
+- A closed-lost conversation showed no follow-up and no immediate action.
+- Browser console warnings/errors: none.

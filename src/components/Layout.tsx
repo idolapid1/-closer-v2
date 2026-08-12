@@ -15,7 +15,7 @@ export function Layout() {
       <header className="topbar">
         <div>
           <strong>CLOSER v2</strong>
-          <small>Phase 1 internal demo</small>
+          <small>Phase 2 engineering simulator</small>
         </div>
         <BusinessSwitcher />
       </header>

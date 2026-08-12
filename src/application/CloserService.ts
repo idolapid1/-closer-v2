@@ -1,14 +1,19 @@
 import {
   ActivityType,
   AppointmentStatus,
+  BusinessKind,
+  ConversationChannel,
   ConversationMode,
+  ConversationStage,
   ConversationState,
+  CustomerFactKey,
   HandoffReason,
   JobStatus,
   LeadStatus,
   MessageAuthor,
   MessageDirection,
   MessagePurpose,
+  MemorySource,
   NextActionStatus,
   NextActionType,
   PaymentKind,
@@ -16,12 +21,16 @@ import {
   PaymentStatus,
   QuoteStatus,
   RevenueStage,
+  WorkflowType,
   type Activity,
   type Appointment,
   type ConsentRecord,
+  type Contact,
   type Conversation,
+  type CustomerFactValue,
   type HumanHandoff,
   type Job,
+  type Lead,
   type Message,
   type NextAction,
   type Payment,
@@ -42,7 +51,18 @@ import {
 import type { AIProvider } from '../integrations/ai/AIProvider';
 import type { MessagingProvider } from '../integrations/messaging/MessagingProvider';
 import type { DatabasePort, DatabaseSchema } from '../repositories/contracts';
-import type { AssistantContext, AssistantDecision } from '../types/assistant';
+import {
+  AutonomyLevel,
+  type AssistantContext,
+  type AssistantDecision,
+  type ConversationDecisionRecord,
+  type MemoryConflict,
+} from '../types/assistant';
+import { AssistantToolExecutor } from './conversation/AssistantToolExecutor';
+import { AssistantDecisionPolicy } from './conversation/AssistantDecisionPolicy';
+import { ConversationStageService } from './conversation/ConversationStageService';
+import { CustomerMemoryService } from './conversation/CustomerMemoryService';
+import { FollowUpService } from './conversation/FollowUpService';
 
 export interface CreateAppointmentInput {
   businessId: string;
@@ -74,14 +94,33 @@ export interface RecordPaymentInput {
   originalPaymentId?: string;
 }
 
+export interface ReceiveCustomerMessageOptions {
+  providerMessageId?: string;
+}
+
+export interface CreateCustomerOpportunityInput {
+  businessId: string;
+  displayName: string;
+  phone?: string;
+}
+
 export class CloserService {
+  private readonly memoryService: CustomerMemoryService;
+  private readonly stageService = new ConversationStageService();
+  private readonly toolExecutor = new AssistantToolExecutor();
+  private readonly decisionPolicy = new AssistantDecisionPolicy();
+  private readonly followUpService: FollowUpService;
+
   constructor(
     private readonly database: DatabasePort,
     private readonly aiProvider: AIProvider,
     private readonly messagingProvider: MessagingProvider,
     private readonly now: () => string = () => new Date().toISOString(),
     private readonly id: () => string = () => crypto.randomUUID(),
-  ) {}
+  ) {
+    this.memoryService = new CustomerMemoryService(database, now, id);
+    this.followUpService = new FollowUpService(database, now, id);
+  }
 
   snapshot(): DatabaseSchema {
     return this.database.snapshot();
@@ -109,6 +148,7 @@ export class CloserService {
     businessId: string,
     conversationId: string,
     body: string,
+    options: ReceiveCustomerMessageOptions = {},
   ): Promise<AssistantDecision> {
     if (!body.trim()) throw new DomainError('Message body is required', 'EMPTY_MESSAGE');
     const repositories = this.database.repositories;
@@ -119,6 +159,30 @@ export class CloserService {
     if (conversation.mode === ConversationMode.Closed) {
       throw new DomainError('Closed conversations cannot receive messages', 'CONVERSATION_CLOSED');
     }
+    const providerMessageId = options.providerMessageId ?? `mock-inbound-${this.id()}`;
+    const duplicate = repositories.messages.find(
+      businessId,
+      (message) => message.providerMessageId === providerMessageId,
+    )[0];
+    if (duplicate) {
+      if (duplicate.conversationId !== conversationId || duplicate.body !== body.trim()) {
+        throw new DomainError(
+          'Incoming message id was reused for different content',
+          'IDEMPOTENCY_CONFLICT',
+        );
+      }
+      const record = repositories.assistantDecisionRecords.find(
+        businessId,
+        (candidate) => candidate.triggeringMessageId === duplicate.id,
+      )[0];
+      if (!record) {
+        throw new DomainError(
+          'Incoming message was already accepted and is awaiting a decision',
+          'MESSAGE_ALREADY_RECEIVED',
+        );
+      }
+      return structuredClone(record.decision);
+    }
     const at = this.now();
     const message: Message = {
       ...this.entityBase(businessId),
@@ -127,10 +191,11 @@ export class CloserService {
       author: MessageAuthor.Customer,
       purpose: MessagePurpose.Operational,
       body: body.trim(),
-      providerMessageId: `mock-inbound-${this.id()}`,
+      providerMessageId,
       sentAt: at,
     };
     repositories.messages.save(businessId, message);
+    this.followUpService.cancelPending(businessId, conversationId);
     repositories.conversations.save(businessId, {
       ...conversation,
       updatedAt: at,
@@ -140,21 +205,88 @@ export class CloserService {
 
     if (isOptOutMessage(body)) this.optOutMarketing(businessId, conversation.contactId, 'CUSTOMER_MESSAGE');
 
-    const decision = await this.getAssistantDecision(businessId, conversationId);
+    const business = required(repositories.businesses.get(businessId, businessId), 'Business not found');
+    const memoryCapture = this.memoryService.captureFromMessage(
+      businessId,
+      conversation.contactId,
+      message,
+      business.kind,
+      repositories.services.list(businessId),
+    );
+    if (memoryCapture.saved.length > 0) {
+      this.activity(
+        businessId,
+        conversation.contactId,
+        conversationId,
+        ActivityType.MemoryChanged,
+        `${memoryCapture.saved.length} customer fact${memoryCapture.saved.length === 1 ? '' : 's'} updated.`,
+      );
+    }
+    const rememberedService = memoryCapture.saved.find(
+      (fact) =>
+        fact.key === CustomerFactKey.RequestedService ||
+        fact.key === CustomerFactKey.RequestedJob,
+    );
+    if (rememberedService && typeof rememberedService.value === 'string') {
+      const lead = required(
+        repositories.leads.find(
+          businessId,
+          (candidate) => candidate.conversationId === conversationId,
+        )[0] ?? null,
+        'Lead not found',
+      );
+      const selectedService = repositories.services.get(businessId, rememberedService.value);
+      if (selectedService) {
+        repositories.leads.save(businessId, {
+          ...lead,
+          updatedAt: this.now(),
+          serviceId: selectedService.id,
+        });
+      }
+    }
+
+    let decision = await this.getAssistantDecision(
+      businessId,
+      conversationId,
+      memoryCapture.conflicts,
+    );
+    const context = this.buildAssistantContext(
+      businessId,
+      conversationId,
+      memoryCapture.conflicts,
+    );
+    decision = this.decisionPolicy.validate(context, decision);
+    const toolResult = this.toolExecutor.execute(
+      businessId,
+      context,
+      decision,
+      (tenantId, serviceId, staffId, date) =>
+        this.getAvailableSlots(tenantId, serviceId, staffId, date),
+    );
+    decision = this.decisionPolicy.applyToolResult(context, decision, toolResult);
     repositories.conversations.save(businessId, {
       ...required(repositories.conversations.get(businessId, conversationId), 'Conversation not found'),
       updatedAt: this.now(),
-      currentIntent: decision.intent,
-      missingInformation: decision.missingInformation,
+      currentIntent: decision.detectedIntent,
+      inferredStage: decision.conversationStage,
+      missingInformation: decision.missingInformation.map(String),
     });
 
-    if (decision.requiresHumanReview) {
+    const modeBeforeDecision = conversation.mode;
+    if (modeBeforeDecision === ConversationMode.HumanActive || modeBeforeDecision === ConversationMode.Paused) {
+      // Internal suggestion only. No action, follow-up, send, or mode change may execute.
+    } else if (decision.requiresHumanReview) {
       this.startHumanTakeover(
         businessId,
         conversationId,
         decision.handoffReason ?? HandoffReason.UnsupportedKnowledge,
         decision.suggestedReply,
         'ASSISTANT',
+        {
+          triggeringMessageId: message.id,
+          confidence: decision.confidence,
+          responsibleState: decision.conversationStage,
+        },
       );
     } else {
       this.replaceNextAction(
@@ -162,49 +294,250 @@ export class CloserService {
         conversationId,
         decision.suggestedNextAction,
         decision.missingInformation.length > 0
-          ? `Collect: ${decision.missingInformation.join(', ')}`
-          : 'Respond using verified business knowledge.',
+          ? plainMissingInformation(decision.missingInformation)
+          : plainNextActionReason(decision),
         true,
       );
+      this.followUpService.scheduleForDecision(
+        businessId,
+        required(repositories.conversations.get(businessId, conversationId), 'Conversation not found'),
+        message.id,
+        decision,
+      );
+    }
+    const record: ConversationDecisionRecord = {
+      ...this.entityBase(businessId),
+      contactId: conversation.contactId,
+      conversationId,
+      triggeringMessageId: message.id,
+      decision: structuredClone(decision),
+      toolResult: structuredClone(toolResult),
+    };
+    repositories.assistantDecisionRecords.save(businessId, record);
+    this.activity(
+      businessId,
+      conversation.contactId,
+      conversationId,
+      ActivityType.AssistantToolRequested,
+      `${decision.requestedTool}: ${toolResult.status}`,
+    );
+    if (
+      modeBeforeDecision === ConversationMode.AiActive &&
+      !decision.requiresHumanReview &&
+      decision.autonomyLevel <= AutonomyLevel.InformationCollection &&
+      this.decisionPolicy.canAutomaticallySend(decision, toolResult) &&
+      this.canSendOperationalMessage(businessId, conversation.contactId)
+    ) {
+      await this.sendMessage(businessId, conversationId, decision.suggestedReply, {
+        author: MessageAuthor.Assistant,
+        purpose: MessagePurpose.Operational,
+      });
     }
     return decision;
   }
 
-  async getAssistantDecision(businessId: string, conversationId: string): Promise<AssistantDecision> {
+  async getAssistantDecision(
+    businessId: string,
+    conversationId: string,
+    memoryConflicts: MemoryConflict[] = [],
+  ): Promise<AssistantDecision> {
+    return this.aiProvider.decide(
+      this.buildAssistantContext(businessId, conversationId, memoryConflicts),
+    );
+  }
+
+  createCustomerOpportunity(input: CreateCustomerOpportunityInput): {
+    contact: Contact;
+    lead: Lead;
+    conversation: Conversation;
+  } {
+    const repositories = this.database.repositories;
+    const business = required(
+      repositories.businesses.get(input.businessId, input.businessId),
+      'Business not found',
+    );
+    const contact: Contact = {
+      ...this.entityBase(input.businessId),
+      displayName: input.displayName.trim() || 'New customer',
+      phone: input.phone?.trim() || `+972-555-${this.id().slice(0, 7)}`,
+      email: null,
+      address: null,
+      notes: [],
+    };
+    repositories.contacts.save(input.businessId, contact);
+    const conversation: Conversation = {
+      ...this.entityBase(input.businessId),
+      contactId: contact.id,
+      channel: ConversationChannel.WhatsApp,
+      ownerTeamMemberId: null,
+      state: ConversationState.NewInquiry,
+      inferredStage: ConversationStage.NewInquiry,
+      mode: ConversationMode.AiActive,
+      automationEnabled: true,
+      lastCustomerMessageAt: null,
+      lastBusinessResponseAt: null,
+      currentIntent: null,
+      missingInformation: [],
+      nextActionId: null,
+      handoffId: null,
+    };
+    repositories.conversations.save(input.businessId, conversation);
+    const lead: Lead = {
+      ...this.entityBase(input.businessId),
+      contactId: contact.id,
+      conversationId: conversation.id,
+      workflowType: business.workflowType,
+      status: LeadStatus.New,
+      serviceId: null,
+      nextActionId: null,
+      closedAt: null,
+    };
+    repositories.leads.save(input.businessId, lead);
+    this.replaceNextAction(
+      input.businessId,
+      conversation.id,
+      NextActionType.ReplyToCustomer,
+      'Reply to the new customer.',
+      false,
+    );
+    const consent: ConsentRecord = {
+      ...this.entityBase(input.businessId),
+      contactId: contact.id,
+      marketingAllowed: false,
+      operationalAllowed: true,
+      optedOut: false,
+      source: 'MANUAL',
+      changedAt: this.now(),
+    };
+    repositories.consentRecords.save(input.businessId, consent);
+    return {
+      contact,
+      lead: required(repositories.leads.get(input.businessId, lead.id), 'Lead not found'),
+      conversation: required(
+        repositories.conversations.get(input.businessId, conversation.id),
+        'Conversation not found',
+      ),
+    };
+  }
+
+  selectServiceForLead(businessId: string, leadId: string, serviceId: string): Lead {
+    const repositories = this.database.repositories;
+    const lead = required(repositories.leads.get(businessId, leadId), 'Lead not found');
+    const service = required(repositories.services.get(businessId, serviceId), 'Service not found');
+    this.memoryService.remember(
+      businessId,
+      lead.contactId,
+      lead.workflowType === WorkflowType.QuoteJob &&
+        repositories.businesses.get(businessId, businessId)?.kind === BusinessKind.HomeServices
+        ? CustomerFactKey.RequestedJob
+        : CustomerFactKey.RequestedService,
+      service.id,
+      MemorySource.Manual,
+    );
+    return repositories.leads.save(businessId, {
+      ...lead,
+      updatedAt: this.now(),
+      serviceId: service.id,
+    });
+  }
+
+  rememberCustomerFact(
+    businessId: string,
+    contactId: string,
+    key: CustomerFactKey,
+    value: CustomerFactValue,
+  ) {
+    return this.memoryService.remember(
+      businessId,
+      contactId,
+      key,
+      value,
+      MemorySource.Manual,
+    );
+  }
+
+  scheduleFollowUpForConversation(
+    businessId: string,
+    conversationId: string,
+    dueAt: string,
+  ) {
+    const stage = this.inferConversationStage(businessId, conversationId);
+    const followUp = this.followUpService.scheduleForStage(
+      businessId,
+      conversationId,
+      stage,
+      dueAt,
+    );
+    const conversation = required(
+      this.database.repositories.conversations.get(businessId, conversationId),
+      'Conversation not found',
+    );
+    this.activity(
+      businessId,
+      conversation.contactId,
+      conversationId,
+      ActivityType.FollowUpScheduled,
+      followUp.reason,
+    );
+    return followUp;
+  }
+
+  inferConversationStage(businessId: string, conversationId: string): ConversationStage {
     const repositories = this.database.repositories;
     const conversation = required(
       repositories.conversations.get(businessId, conversationId),
       'Conversation not found',
     );
-    const messages = repositories.messages
-      .find(businessId, (message) => message.conversationId === conversationId)
-      .sort((first, second) => first.sentAt.localeCompare(second.sentAt));
-    const latestCustomerMessage = [...messages]
-      .reverse()
-      .find((message) => message.author === MessageAuthor.Customer);
-    if (!latestCustomerMessage) {
-      throw new DomainError('No customer message is available to analyze', 'NO_CUSTOMER_MESSAGE');
-    }
-    const business = required(repositories.businesses.get(businessId, businessId), 'Business not found');
-    const settings = required(
-      repositories.businessSettings.list(businessId)[0] ?? null,
-      'Business settings not found',
+    const lead = required(
+      repositories.leads.find(
+        businessId,
+        (candidate) => candidate.conversationId === conversationId,
+      )[0] ?? null,
+      'Lead not found',
     );
     const knowledge = required(
       repositories.businessKnowledge.list(businessId)[0] ?? null,
       'Business knowledge not found',
     );
-    const context: AssistantContext = {
-      business,
-      settings,
-      knowledge,
-      services: repositories.services.list(businessId),
-      contact: required(repositories.contacts.get(businessId, conversation.contactId), 'Contact not found'),
+    return this.stageService.infer({
+      lead,
       conversation,
-      messages,
-      latestCustomerMessage,
-    };
-    return this.aiProvider.decide(context);
+      knowledge,
+      memory: this.memoryService.list(businessId, conversation.contactId),
+      appointments: repositories.appointments.find(
+        businessId,
+        (appointment) => appointment.leadId === lead.id,
+      ),
+      quotes: repositories.quotes.find(businessId, (quote) => quote.leadId === lead.id),
+      jobs: repositories.jobs.find(businessId, (job) => job.leadId === lead.id),
+      payments: repositories.payments.find(
+        businessId,
+        (payment) => payment.contactId === conversation.contactId,
+      ),
+      followUps: repositories.scheduledFollowUps.find(
+        businessId,
+        (followUp) => followUp.conversationId === conversationId,
+      ),
+    });
+  }
+
+  latestDecisionRecord(
+    businessId: string,
+    conversationId: string,
+  ): ConversationDecisionRecord | null {
+    return (
+      this.database.repositories.assistantDecisionRecords
+        .find(businessId, (record) => record.conversationId === conversationId)
+        .at(-1) ?? null
+    );
+  }
+
+  private canSendOperationalMessage(businessId: string, contactId: string): boolean {
+    const consent = this.database.repositories.consentRecords.find(
+      businessId,
+      (record) => record.contactId === contactId,
+    )[0];
+    return consent?.operationalAllowed ?? true;
   }
 
   async sendMessage(
@@ -271,6 +604,11 @@ export class CloserService {
     reason: HandoffReason,
     detail: string,
     startedBy: HumanHandoff['startedBy'] = 'HUMAN',
+    metadata: {
+      triggeringMessageId?: string;
+      confidence?: number;
+      responsibleState?: ConversationStage;
+    } = {},
   ): HumanHandoff {
     const repositories = this.database.repositories;
     const conversation = required(
@@ -293,16 +631,21 @@ export class CloserService {
       startedAt: this.now(),
       resolvedAt: null,
       startedBy,
+      triggeringMessageId: metadata.triggeringMessageId ?? null,
+      confidence: metadata.confidence ?? null,
+      responsibleState: metadata.responsibleState ?? conversation.inferredStage,
     };
     repositories.humanHandoffs.save(businessId, handoff);
     repositories.conversations.save(businessId, {
       ...conversation,
       updatedAt: this.now(),
       mode: ConversationMode.HumanActive,
+      inferredStage: ConversationStage.HumanReview,
       automationEnabled: false,
       handoffId: handoff.id,
     });
     this.replaceNextAction(businessId, conversationId, NextActionType.HumanReview, detail, false);
+    this.followUpService.cancelPending(businessId, conversationId);
     this.activity(businessId, conversation.contactId, conversationId, ActivityType.HandoffStarted, `Human takeover: ${detail}`);
     return handoff;
   }
@@ -330,15 +673,23 @@ export class CloserService {
       ...conversation,
       updatedAt: this.now(),
       mode: ConversationMode.AiActive,
+      inferredStage: ConversationStage.Discovery,
       automationEnabled: true,
       handoffId: null,
     };
     repositories.conversations.save(businessId, resumed);
+    const inferredStage = this.inferConversationStage(businessId, conversationId);
+    repositories.conversations.save(businessId, {
+      ...resumed,
+      updatedAt: this.now(),
+      inferredStage,
+    });
+    const resumedAction = nextActionForConversationStage(inferredStage);
     this.replaceNextAction(
       businessId,
       conversationId,
-      NextActionType.ReplyToCustomer,
-      'Assistant explicitly resumed; review the latest customer need.',
+      resumedAction,
+      resumedActionReason(resumedAction),
       true,
     );
     this.activity(businessId, conversation.contactId, conversationId, ActivityType.AssistantResumed, 'Assistant mode explicitly resumed.');
@@ -465,6 +816,14 @@ export class CloserService {
       deposit > 0 ? 'Collect the validated deposit.' : 'Confirm the appointment.',
       false,
     );
+    this.tryScheduleFollowUp(
+      input.businessId,
+      lead.conversationId,
+      deposit > 0
+        ? ConversationStage.AwaitingDeposit
+        : ConversationStage.AwaitingConfirmation,
+      addHours(this.now(), deposit > 0 ? 48 : 24),
+    );
     this.activity(input.businessId, input.contactId, lead.conversationId, ActivityType.AppointmentChanged, 'Appointment created.');
     return appointment;
   }
@@ -544,6 +903,12 @@ export class CloserService {
       const lead = required(repositories.leads.get(businessId, appointment.leadId), 'Lead not found');
       this.replaceNextAction(businessId, lead.conversationId, NextActionType.CollectBalance, 'Service is complete; collect the remaining balance.', false);
       this.setConversationState(businessId, lead.conversationId, ConversationState.AwaitingPayment);
+      this.tryScheduleFollowUp(
+        businessId,
+        lead.conversationId,
+        ConversationStage.AwaitingBalance,
+        addHours(this.now(), 24),
+      );
     }
     return completed;
   }
@@ -591,6 +956,12 @@ export class CloserService {
     const lead = required(repositories.leads.get(businessId, quote.leadId), 'Lead not found');
     this.setConversationState(businessId, lead.conversationId, ConversationState.QuoteSent);
     this.replaceNextAction(businessId, lead.conversationId, NextActionType.FollowUpQuote, 'Follow up if the customer has not responded.', true);
+    this.tryScheduleFollowUp(
+      businessId,
+      lead.conversationId,
+      ConversationStage.QuoteSent,
+      addHours(this.now(), 72),
+    );
     return sent;
   }
 
@@ -642,6 +1013,14 @@ export class CloserService {
       job.depositRequiredCents > 0 ? 'Collect the validated job deposit.' : 'Schedule the accepted job.',
       false,
     );
+    if (job.depositRequiredCents > 0) {
+      this.tryScheduleFollowUp(
+        businessId,
+        lead.conversationId,
+        ConversationStage.AwaitingDeposit,
+        addHours(this.now(), 48),
+      );
+    }
     return job;
   }
 
@@ -695,6 +1074,12 @@ export class CloserService {
       const lead = required(repositories.leads.get(businessId, job.leadId), 'Lead not found');
       this.replaceNextAction(businessId, lead.conversationId, NextActionType.CollectBalance, 'Job is complete; collect the remaining balance.', false);
       this.setConversationState(businessId, lead.conversationId, ConversationState.AwaitingPayment);
+      this.tryScheduleFollowUp(
+        businessId,
+        lead.conversationId,
+        ConversationStage.AwaitingBalance,
+        addHours(this.now(), 24),
+      );
     }
     return completed;
   }
@@ -747,6 +1132,11 @@ export class CloserService {
       collectedAt: this.now(),
     };
     repositories.payments.save(input.businessId, payment);
+    this.cancelFollowUpsForReference(
+      input.businessId,
+      input.referenceType,
+      input.referenceId,
+    );
     this.recordRevenueEvent({
       businessId: input.businessId,
       contactId: input.contactId,
@@ -830,6 +1220,133 @@ export class CloserService {
   balance(businessId: string, referenceType: PaymentReferenceType, referenceId: string): number {
     const total = this.totalForReference(businessId, referenceType, referenceId);
     return remainingBalance(total, this.database.repositories.payments.list(businessId), referenceId);
+  }
+
+  private buildAssistantContext(
+    businessId: string,
+    conversationId: string,
+    memoryConflicts: MemoryConflict[],
+  ): AssistantContext {
+    const repositories = this.database.repositories;
+    const conversation = required(
+      repositories.conversations.get(businessId, conversationId),
+      'Conversation not found',
+    );
+    const lead = required(
+      repositories.leads.find(
+        businessId,
+        (candidate) => candidate.conversationId === conversationId,
+      )[0] ?? null,
+      'Lead not found',
+    );
+    const messages = repositories.messages
+      .find(businessId, (message) => message.conversationId === conversationId)
+      .sort((first, second) => first.sentAt.localeCompare(second.sentAt));
+    const latestCustomerMessage = [...messages]
+      .reverse()
+      .find((message) => message.author === MessageAuthor.Customer);
+    if (!latestCustomerMessage) {
+      throw new DomainError('No customer message is available to analyze', 'NO_CUSTOMER_MESSAGE');
+    }
+    const business = required(
+      repositories.businesses.get(businessId, businessId),
+      'Business not found',
+    );
+    const settings = required(
+      repositories.businessSettings.list(businessId)[0] ?? null,
+      'Business settings not found',
+    );
+    const knowledge = required(
+      repositories.businessKnowledge.list(businessId)[0] ?? null,
+      'Business knowledge not found',
+    );
+    const memory = this.memoryService.list(businessId, conversation.contactId);
+    const appointments = repositories.appointments.find(
+      businessId,
+      (appointment) => appointment.leadId === lead.id,
+    );
+    const quotes = repositories.quotes.find(
+      businessId,
+      (quote) => quote.leadId === lead.id,
+    );
+    const jobs = repositories.jobs.find(businessId, (job) => job.leadId === lead.id);
+    const payments = repositories.payments.find(
+      businessId,
+      (payment) => payment.contactId === conversation.contactId,
+    );
+    const inferredStage = this.stageService.infer({
+      lead,
+      conversation,
+      knowledge,
+      memory,
+      appointments,
+      quotes,
+      jobs,
+      payments,
+      followUps: repositories.scheduledFollowUps.find(
+        businessId,
+        (followUp) => followUp.conversationId === conversationId,
+      ),
+    });
+    return {
+      business,
+      settings,
+      knowledge,
+      services: repositories.services.list(businessId),
+      teamMembers: repositories.teamMembers.list(businessId),
+      contact: required(
+        repositories.contacts.get(businessId, conversation.contactId),
+        'Contact not found',
+      ),
+      lead,
+      conversation,
+      messages,
+      latestCustomerMessage,
+      memory,
+      memoryConflicts,
+      appointments,
+      quotes,
+      jobs,
+      payments,
+      inferredStage,
+    };
+  }
+
+  private tryScheduleFollowUp(
+    businessId: string,
+    conversationId: string,
+    stage: ConversationStage,
+    dueAt: string,
+  ): void {
+    try {
+      this.followUpService.scheduleForStage(businessId, conversationId, stage, dueAt);
+    } catch (error) {
+      if (
+        !(error instanceof DomainError) ||
+        !['FOLLOW_UP_BLOCKED', 'FOLLOW_UP_NOT_REQUIRED', 'MARKETING_BLOCKED', 'OPERATIONAL_BLOCKED'].includes(
+          error.code,
+        )
+      ) {
+        throw error;
+      }
+    }
+  }
+
+  private cancelFollowUpsForReference(
+    businessId: string,
+    referenceType: PaymentReferenceType,
+    referenceId: string,
+  ): void {
+    const repositories = this.database.repositories;
+    const leadId =
+      referenceType === PaymentReferenceType.Appointment
+        ? repositories.appointments.get(businessId, referenceId)?.leadId
+        : referenceType === PaymentReferenceType.Job
+          ? repositories.jobs.get(businessId, referenceId)?.leadId
+          : repositories.quotes.get(businessId, referenceId)?.leadId;
+    if (!leadId) return;
+    const lead = repositories.leads.get(businessId, leadId);
+    if (lead) this.followUpService.cancelPending(businessId, lead.conversationId);
   }
 
   private replaceNextAction(
@@ -1053,4 +1570,47 @@ function parseTime(value: string): [number, number] {
 
 function isOptOutMessage(body: string): boolean {
   return /\b(stop|unsubscribe|opt out|no marketing)\b/i.test(body);
+}
+
+function plainMissingInformation(keys: CustomerFactKey[]): string {
+  const labels = keys.map((key) => key.toLowerCase().replaceAll('_', ' '));
+  return `Ask for ${labels.join(', ')}.`;
+}
+
+function plainNextActionReason(decision: AssistantDecision): string {
+  if (decision.suggestedNextAction === NextActionType.PrepareQuote) {
+    return 'Prepare a quote using the collected details.';
+  }
+  if (decision.suggestedNextAction === NextActionType.OfferAppointment) {
+    return 'Offer a validated appointment option.';
+  }
+  if (decision.suggestedNextAction === NextActionType.CollectBalance) {
+    return 'Request the remaining payment.';
+  }
+  return 'Reply using verified business information.';
+}
+
+function nextActionForConversationStage(stage: ConversationStage): NextActionType {
+  if (stage === ConversationStage.AwaitingBalance) return NextActionType.CollectBalance;
+  if (stage === ConversationStage.AwaitingDeposit) return NextActionType.RequestDeposit;
+  if (stage === ConversationStage.QuoteSent) return NextActionType.FollowUpQuote;
+  if (stage === ConversationStage.ReadyForQuote) return NextActionType.PrepareQuote;
+  if (stage === ConversationStage.ReadyToBook) return NextActionType.OfferAppointment;
+  if (stage === ConversationStage.AwaitingConfirmation) return NextActionType.ConfirmAppointment;
+  if (stage === ConversationStage.JobScheduled) return NextActionType.ReplyToCustomer;
+  return NextActionType.ReplyToCustomer;
+}
+
+function resumedActionReason(action: NextActionType): string {
+  if (action === NextActionType.CollectBalance) return 'Request the remaining payment.';
+  if (action === NextActionType.RequestDeposit) return 'Request the validated deposit.';
+  if (action === NextActionType.FollowUpQuote) return 'Follow up on the sent quote.';
+  if (action === NextActionType.PrepareQuote) return 'Prepare the quote from the collected details.';
+  if (action === NextActionType.OfferAppointment) return 'Offer a validated appointment option.';
+  if (action === NextActionType.ConfirmAppointment) return 'Confirm the appointment.';
+  return 'Assistant explicitly resumed; review the latest customer need.';
+}
+
+function addHours(value: string, hours: number): string {
+  return new Date(new Date(value).getTime() + hours * 60 * 60 * 1000).toISOString();
 }

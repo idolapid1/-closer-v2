@@ -1,12 +1,12 @@
-# Next phase
+# Recommended Phase 3
 
-The recommended next step is a dedicated product-design and backend-boundary phase, starting with the action-first inbox/customer workspace rather than a dashboard.
+Phase 3 should establish the production backend and evaluation boundary before connecting real AI or WhatsApp.
 
-1. Validate the conversation and NextAction vocabulary with real service-business operators.
-2. Design the production inbox/customer experience around one clear action.
-3. Split `CloserService` into focused application modules without changing tested contracts.
-4. Design an authenticated backend repository implementation and migration from local schema v1.
-5. Add a WhatsApp sandbox adapter behind `MessagingProvider`, consent audit requirements, retries, and webhook idempotency.
-6. Add a real AI adapter only after an evaluation set exists for knowledge grounding, uncertainty, tool validation, and handoff.
+1. Define an authenticated API and server-side tenant context; replace browser repositories behind the existing ports.
+2. Design schema migrations, audit retention, encryption, authorization, backup, and recovery for knowledge, memory, consent, messages, handoffs, and financial records.
+3. Turn the 37 deterministic conversation scenarios into a versioned assistant evaluation corpus with grounding, handoff, false-claim, duplicate-delivery, and regression scores.
+4. Add a WhatsApp sandbox/webhook adapter with signature validation, retries, delivery state, ordering, and webhook idempotency—still behind `MessagingProvider`.
+5. Add a real AI adapter in shadow/suggestion-only mode. Keep `AssistantDecisionPolicy`, tool permissions, grounded response reconstruction, and explicit Level 3 validation as mandatory gates.
+6. Run a dedicated product-design phase for the action-first inbox/customer workspace; do not expand into a generic CRM or dashboard suite.
 
-Do not add analytics dashboards, broad CRM scope, or additional channels until the complete inquiry-to-payment loop is validated with users.
+Do not add production auto-action, broad analytics, new channels, or background marketing until server-side consent/audit rules and the evaluation gate are proven.

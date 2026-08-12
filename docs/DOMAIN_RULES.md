@@ -2,28 +2,28 @@
 
 ## Tenant boundary
 
-Every major entity has `id`, `businessId`, `createdAt`, and `updatedAt`. Repository calls are always scoped by `businessId`. An entity cannot be read or saved through a different tenant.
+Every major entity has `id`, `businessId`, `createdAt`, and `updatedAt`. Repository calls require `businessId`. Knowledge, memory, messages, decisions, follow-ups, tools, and financial state cannot cross tenants.
 
 ## Next Action
 
-Every active lead (`NEW`, `ACTIVE`, or `QUALIFIED`) must have exactly one pending NextAction, and the lead must point to it. Replacing an action cancels the previous pending action. Won, lost, and archived leads do not require one.
+Every active lead (`NEW`, `ACTIVE`, or `QUALIFIED`) has exactly one current pending NextAction, and the lead points to it. Replacing an action cancels the prior pending action. Won, lost, and archived leads do not require one. Stage-specific truth wins: completed unpaid work means collect the balance; a sensitive question means human review.
 
-## Conversation control
+## Conversation and autonomy
 
-Conversation modes are `AI_ACTIVE`, `HUMAN_ACTIVE`, `PAUSED`, and `CLOSED`. Human takeover disables automation, replaces automated follow-up with a human-review action, and records the reason. Only explicit resume restores AI mode.
+Stages are inferred context, not a workflow engine. The engine derives them from lead, quote/job/appointment, payment, memory, and mode state. Level 1 safe information and Level 2 non-sensitive information collection may auto-send only after application validation and grounded reply reconstruction. Level 3 business actions are proposals. Level 4 always hands off.
 
-## Consent
+## Human control
 
-An opt-out is persisted as a ConsentRecord. Marketing sends are blocked when marketing is not allowed or the contact opted out. Operational messages remain independently controlled.
+Modes are `AI_ACTIVE`, `HUMAN_ACTIVE`, `PAUSED`, and `CLOSED`. Human Takeover records reason, triggering message, confidence, and responsible stage; disables automated sending; cancels pending follow-ups; and creates a human-review action. Resume AI is explicit and never automatic.
 
-## Scheduling
+## Structured memory
 
-Appointment duration comes from Service. Active appointments for the same staff member cannot overlap. Cancelled appointments do not block time. Confirmation requires the configured deposit when one exists.
+Memory contains normalized operational facts with tenant/contact, key, value, source, timestamps, and optional source message. New non-conflicting facts are stored. Explicit corrections replace facts. Contradictions preserve the existing fact and require human confirmation.
 
-## Quote and job
+## Consent and follow-up
 
-Quote totals are integer cents: items minus discount plus optional tax. Discounts cannot exceed subtotal. Only sent/viewed/change-requested quotes can be accepted. Acceptance creates one job; repeated acceptance returns the existing job. A paid deposit moves the job to ready-to-schedule.
+Opt-out persists and blocks marketing. Operational communication remains independently controlled. A follow-up is a deterministic scheduled record, not a timer. It is blocked for Human Takeover, paused/closed/complete state, human-review action, incompatible consent, or existing identical pending scenario. New customer messages cancel pending follow-ups before recalculation.
 
-## Completion
+## Scheduling, quote, job, and completion
 
-Completion records service delivery, not cash. A completed and fully paid opportunity is closed as won with no immediate action. Otherwise its next action is collecting the remaining balance.
+Appointment duration comes from Service. Active appointments for the same staff cannot overlap. Availability claims use validated rules and existing appointments. Quote math uses integer cents; acceptance creates at most one job. Completion records delivery, not cash. An opportunity closes won only when completed and fully paid.

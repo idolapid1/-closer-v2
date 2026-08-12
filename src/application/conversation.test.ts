@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   ConversationIntent,
   ConversationMode,
+  CustomerFactKey,
   HandoffReason,
   MessageAuthor,
   MessagePurpose,
@@ -47,8 +48,10 @@ describe('conversation and assistant orchestration', () => {
       'How much does detailing cost?',
     );
     expect(decision.intent).toBe(ConversationIntent.RequestQuote);
-    expect(decision.missingInformation).toEqual(['vehicleModel', 'vehicleYear', 'vehiclePhotos']);
-    expect(decision.requestedTool).toBe(AssistantTool.RequestPhotos);
+    expect(decision.missingInformation).toContain(CustomerFactKey.VehicleModel);
+    expect(decision.missingInformation).toContain(CustomerFactKey.VehicleYear);
+    expect(decision.missingInformation).toContain(CustomerFactKey.PhotosReceived);
+    expect(decision.requestedTool).toBe(AssistantTool.RequestCustomerInformation);
   });
 
   it('hands a sensitive clinic question to a human and pauses automation', async () => {
@@ -112,7 +115,7 @@ describe('conversation and assistant orchestration', () => {
     expect(() =>
       service.startHumanTakeover(
         'biz-clinic',
-        'biz-clinic-conversation-completed',
+        'biz-clinic-conversation-lost',
         HandoffReason.Manual,
         'Invalid reopen attempt.',
       ),

@@ -40,27 +40,39 @@ export interface BusinessKnowledge extends TenantEntity {
   businessName: string;
   serviceDescriptions: Record<string, string>;
   fixedPricesCents: Record<string, number>;
+  priceRangesCents: Record<string, { minCents: number; maxCents: number }>;
   pricingRules: string[];
+  serviceDurationsMinutes: Record<string, number>;
+  preparationInstructions: Record<string, string[]>;
   openingHours: string;
   address: string;
   serviceArea: string;
+  serviceAreaLocations: string[];
+  appointmentRules: string[];
   cancellationPolicy: string;
   depositPolicy: string;
+  acceptedPaymentMethods: string[];
   faq: KnowledgeFaq[];
   toneOfVoice: string;
   allowedAutomaticAnswers: KnowledgeTopic[];
   answersRequiringHumanReview: string[];
   prohibitedAutonomousActions: string[];
   requiredQualificationFields: string[];
+  serviceQualificationFields: Record<string, CustomerFactKey[]>;
+  minimumAssistantConfidence: number;
 }
 
 export enum KnowledgeTopic {
   OpeningHours = 'OPENING_HOURS',
   Address = 'ADDRESS',
+  ServiceDescription = 'SERVICE_DESCRIPTION',
   FixedPrice = 'FIXED_PRICE',
+  PriceRange = 'PRICE_RANGE',
   ServiceDuration = 'SERVICE_DURATION',
+  PreparationInstructions = 'PREPARATION_INSTRUCTIONS',
   PaymentMethods = 'PAYMENT_METHODS',
   CancellationPolicy = 'CANCELLATION_POLICY',
+  DepositPolicy = 'DEPOSIT_POLICY',
   ServiceArea = 'SERVICE_AREA',
 }
 
@@ -129,14 +141,44 @@ export enum ConversationState {
   Complete = 'COMPLETE',
 }
 
+export enum ConversationStage {
+  NewInquiry = 'NEW_INQUIRY',
+  Discovery = 'DISCOVERY',
+  Qualification = 'QUALIFICATION',
+  InformationCollection = 'INFORMATION_COLLECTION',
+  ReadyToBook = 'READY_TO_BOOK',
+  AppointmentProposed = 'APPOINTMENT_PROPOSED',
+  AwaitingConfirmation = 'AWAITING_CONFIRMATION',
+  ReadyForQuote = 'READY_FOR_QUOTE',
+  QuotePreparation = 'QUOTE_PREPARATION',
+  QuoteSent = 'QUOTE_SENT',
+  AwaitingDeposit = 'AWAITING_DEPOSIT',
+  Booked = 'BOOKED',
+  JobScheduled = 'JOB_SCHEDULED',
+  ServiceComplete = 'SERVICE_COMPLETE',
+  AwaitingBalance = 'AWAITING_BALANCE',
+  ClosedWon = 'CLOSED_WON',
+  ClosedLost = 'CLOSED_LOST',
+  HumanReview = 'HUMAN_REVIEW',
+}
+
 export enum ConversationIntent {
   AskBusinessInfo = 'ASK_BUSINESS_INFO',
+  PriceQuestion = 'PRICE_QUESTION',
+  ServiceInfo = 'SERVICE_INFO',
+  AvailabilityRequest = 'AVAILABILITY_REQUEST',
   RequestAppointment = 'REQUEST_APPOINTMENT',
   RequestQuote = 'REQUEST_QUOTE',
+  PaymentQuestion = 'PAYMENT_QUESTION',
+  RescheduleRequest = 'RESCHEDULE_REQUEST',
+  CancellationRequest = 'CANCELLATION_REQUEST',
   ProvideInformation = 'PROVIDE_INFORMATION',
   Complaint = 'COMPLAINT',
   Refund = 'REFUND',
   SensitiveQuestion = 'SENSITIVE_QUESTION',
+  OptOut = 'OPT_OUT',
+  HumanRequested = 'HUMAN_REQUESTED',
+  UnsupportedRequest = 'UNSUPPORTED_REQUEST',
   Unknown = 'UNKNOWN',
 }
 
@@ -145,6 +187,7 @@ export interface Conversation extends TenantEntity {
   channel: ConversationChannel;
   ownerTeamMemberId: string | null;
   state: ConversationState;
+  inferredStage: ConversationStage;
   mode: ConversationMode;
   automationEnabled: boolean;
   lastCustomerMessageAt: string | null;
@@ -190,6 +233,10 @@ export enum NextActionType {
   OfferAppointment = 'OFFER_APPOINTMENT',
   ConfirmAppointment = 'CONFIRM_APPOINTMENT',
   FollowUpQuote = 'FOLLOW_UP_QUOTE',
+  FollowUpCustomer = 'FOLLOW_UP_CUSTOMER',
+  PrepareQuote = 'PREPARE_QUOTE',
+  VerifyServiceArea = 'VERIFY_SERVICE_AREA',
+  ReviewPaymentClaim = 'REVIEW_PAYMENT_CLAIM',
   RequestDeposit = 'REQUEST_DEPOSIT',
   ScheduleJob = 'SCHEDULE_JOB',
   CollectBalance = 'COLLECT_BALANCE',
@@ -225,6 +272,10 @@ export enum ActivityType {
   QuoteChanged = 'QUOTE_CHANGED',
   JobChanged = 'JOB_CHANGED',
   PaymentChanged = 'PAYMENT_CHANGED',
+  MemoryChanged = 'MEMORY_CHANGED',
+  FollowUpScheduled = 'FOLLOW_UP_SCHEDULED',
+  FollowUpCancelled = 'FOLLOW_UP_CANCELLED',
+  AssistantToolRequested = 'ASSISTANT_TOOL_REQUESTED',
 }
 
 export interface Activity extends TenantEntity {
@@ -386,6 +437,9 @@ export enum HandoffReason {
   AggressiveOrConfused = 'AGGRESSIVE_OR_CONFUSED',
   LowConfidence = 'LOW_CONFIDENCE',
   UnsupportedKnowledge = 'UNSUPPORTED_KNOWLEDGE',
+  HumanRequested = 'HUMAN_REQUESTED',
+  ConflictingInformation = 'CONFLICTING_INFORMATION',
+  SafetyConcern = 'SAFETY_CONCERN',
   Manual = 'MANUAL',
 }
 
@@ -396,6 +450,72 @@ export interface HumanHandoff extends TenantEntity {
   startedAt: string;
   resolvedAt: string | null;
   startedBy: 'ASSISTANT' | 'HUMAN';
+  triggeringMessageId: string | null;
+  confidence: number | null;
+  responsibleState: ConversationStage;
+}
+
+export enum CustomerFactKey {
+  RequestedService = 'REQUESTED_SERVICE',
+  CustomerType = 'CUSTOMER_TYPE',
+  PreferredDate = 'PREFERRED_DATE',
+  PreferredTime = 'PREFERRED_TIME',
+  TreatmentPreference = 'TREATMENT_PREFERENCE',
+  VehicleMake = 'VEHICLE_MAKE',
+  VehicleModel = 'VEHICLE_MODEL',
+  VehicleYear = 'VEHICLE_YEAR',
+  VehicleCondition = 'VEHICLE_CONDITION',
+  PhotosReceived = 'PHOTOS_RECEIVED',
+  RequestedJob = 'REQUESTED_JOB',
+  Location = 'LOCATION',
+  Address = 'ADDRESS',
+  JobDetails = 'JOB_DETAILS',
+  Urgency = 'URGENCY',
+  AccessConsiderations = 'ACCESS_CONSIDERATIONS',
+  SpecialRequirements = 'SPECIAL_REQUIREMENTS',
+}
+
+export type CustomerFactValue = string | number | boolean;
+
+export enum MemorySource {
+  CustomerMessage = 'CUSTOMER_MESSAGE',
+  Manual = 'MANUAL',
+  DomainState = 'DOMAIN_STATE',
+}
+
+export interface CustomerMemoryItem extends TenantEntity {
+  contactId: string;
+  key: CustomerFactKey;
+  value: CustomerFactValue;
+  source: MemorySource;
+  sourceMessageId: string | null;
+}
+
+export enum FollowUpScenario {
+  PriceInquiry = 'PRICE_INQUIRY',
+  BookingConfirmation = 'BOOKING_CONFIRMATION',
+  MissingInformation = 'MISSING_INFORMATION',
+  QuoteResponse = 'QUOTE_RESPONSE',
+  DepositRequest = 'DEPOSIT_REQUEST',
+  OutstandingBalance = 'OUTSTANDING_BALANCE',
+}
+
+export enum FollowUpStatus {
+  Scheduled = 'SCHEDULED',
+  Completed = 'COMPLETED',
+  Cancelled = 'CANCELLED',
+}
+
+export interface ScheduledFollowUp extends TenantEntity {
+  contactId: string;
+  conversationId: string;
+  scenario: FollowUpScenario;
+  status: FollowUpStatus;
+  purpose: MessagePurpose;
+  dueAt: string;
+  idempotencyKey: string;
+  triggeringMessageId: string | null;
+  reason: string;
 }
 
 export enum RevenueStage {
@@ -436,4 +556,7 @@ export type EntityCollectionName =
   | 'payments'
   | 'consentRecords'
   | 'humanHandoffs'
-  | 'revenueEvents';
+  | 'revenueEvents'
+  | 'customerMemory'
+  | 'scheduledFollowUps'
+  | 'assistantDecisionRecords';

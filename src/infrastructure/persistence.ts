@@ -1,4 +1,4 @@
-import type { EntityCollectionName, TenantEntity } from '../domain/entities';
+import { ConversationMode, ConversationStage, type EntityCollectionName, type KnowledgeTopic, type TenantEntity } from '../domain/entities';
 import type {
   DatabasePort,
   DatabaseSchema,
@@ -31,6 +31,9 @@ const COLLECTIONS: EntityCollectionName[] = [
   'consentRecords',
   'humanHandoffs',
   'revenueEvents',
+  'customerMemory',
+  'scheduledFollowUps',
+  'assistantDecisionRecords',
 ];
 
 export class BrowserStorageAdapter implements StoragePort {
@@ -79,6 +82,83 @@ export function isDatabaseSchema(value: unknown): value is DatabaseSchema {
     (collection) =>
       Array.isArray(candidate[collection]) && candidate[collection].every(isTenantEntity),
   );
+}
+
+export function migrateDatabaseSchema(
+  value: unknown,
+  seed: DatabaseSchema,
+): DatabaseSchema | null {
+  if (isDatabaseSchema(value)) return clone(value);
+  if (!value || typeof value !== 'object') return null;
+  const legacy = value as Record<string, unknown>;
+  if (legacy.schemaVersion !== 1) return null;
+  const legacyCollections = COLLECTIONS.filter(
+    (collection) => !['customerMemory', 'scheduledFollowUps', 'assistantDecisionRecords'].includes(collection),
+  );
+  if (
+    !legacyCollections.every(
+      (collection) =>
+        Array.isArray(legacy[collection]) && (legacy[collection] as unknown[]).every(isTenantEntity),
+    )
+  ) {
+    return null;
+  }
+
+  const migrated = clone(legacy) as Record<string, unknown>;
+  migrated.schemaVersion = SCHEMA_VERSION;
+  migrated.customerMemory = [];
+  migrated.scheduledFollowUps = [];
+  migrated.assistantDecisionRecords = [];
+  migrated.businessKnowledge = (legacy.businessKnowledge as Array<Record<string, unknown>>).map(
+    (knowledge) => {
+      const defaults = seed.businessKnowledge.find(
+        (candidate) => candidate.businessId === knowledge.businessId,
+      );
+      return {
+        ...defaults,
+        ...knowledge,
+        priceRangesCents: knowledge.priceRangesCents ?? defaults?.priceRangesCents ?? {},
+        serviceDurationsMinutes:
+          knowledge.serviceDurationsMinutes ?? defaults?.serviceDurationsMinutes ?? {},
+        preparationInstructions:
+          knowledge.preparationInstructions ?? defaults?.preparationInstructions ?? {},
+        serviceAreaLocations:
+          knowledge.serviceAreaLocations ?? defaults?.serviceAreaLocations ?? [],
+        appointmentRules: knowledge.appointmentRules ?? defaults?.appointmentRules ?? [],
+        acceptedPaymentMethods:
+          knowledge.acceptedPaymentMethods ?? defaults?.acceptedPaymentMethods ?? [],
+        serviceQualificationFields:
+          knowledge.serviceQualificationFields ?? defaults?.serviceQualificationFields ?? {},
+        minimumAssistantConfidence:
+          knowledge.minimumAssistantConfidence ?? defaults?.minimumAssistantConfidence ?? 0.72,
+        allowedAutomaticAnswers: Array.from(new Set([
+          ...((knowledge.allowedAutomaticAnswers as KnowledgeTopic[] | undefined) ?? []),
+          ...(defaults?.allowedAutomaticAnswers ?? []),
+        ])),
+      };
+    },
+  );
+  migrated.conversations = (legacy.conversations as Array<Record<string, unknown>>).map(
+    (conversation) => ({
+      ...conversation,
+      inferredStage:
+        conversation.inferredStage ??
+        (conversation.mode === ConversationMode.HumanActive
+          ? ConversationStage.HumanReview
+          : conversation.mode === ConversationMode.Closed
+            ? ConversationStage.ClosedWon
+            : ConversationStage.Discovery),
+    }),
+  );
+  migrated.humanHandoffs = (legacy.humanHandoffs as Array<Record<string, unknown>>).map(
+    (handoff) => ({
+      ...handoff,
+      triggeringMessageId: handoff.triggeringMessageId ?? null,
+      confidence: handoff.confidence ?? null,
+      responsibleState: handoff.responsibleState ?? ConversationStage.HumanReview,
+    }),
+  );
+  return isDatabaseSchema(migrated) ? clone(migrated) : null;
 }
 
 function clone<T>(value: T): T {
@@ -175,6 +255,9 @@ export class LocalDatabase implements DatabasePort {
       consentRecords: make('consentRecords'),
       humanHandoffs: make('humanHandoffs'),
       revenueEvents: make('revenueEvents'),
+      customerMemory: make('customerMemory'),
+      scheduledFollowUps: make('scheduledFollowUps'),
+      assistantDecisionRecords: make('assistantDecisionRecords'),
     };
   }
 
@@ -201,7 +284,11 @@ export class LocalDatabase implements DatabasePort {
     }
     try {
       const parsed: unknown = JSON.parse(raw);
-      if (isDatabaseSchema(parsed)) return clone(parsed);
+      const migrated = migrateDatabaseSchema(parsed, this.seed);
+      if (migrated) {
+        this.storage.write(STORAGE_KEY, JSON.stringify(migrated));
+        return migrated;
+      }
     } catch {
       // Fall through to a clean, deterministic seed.
     }

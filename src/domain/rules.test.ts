@@ -20,8 +20,8 @@ describe('Next Action invariant', () => {
 
   it('does not require a next action for a closed opportunity', () => {
     const { database } = createHarness();
-    const lead = database.repositories.leads.get('biz-clinic', 'biz-clinic-lead-completed') as Lead;
-    expect(lead.status).toBe(LeadStatus.Won);
+    const lead = database.repositories.leads.get('biz-clinic', 'biz-clinic-lead-lost') as Lead;
+    expect(lead.status).toBe(LeadStatus.Lost);
     expect(() => assertNextActionInvariant(lead, [])).not.toThrow();
   });
 });

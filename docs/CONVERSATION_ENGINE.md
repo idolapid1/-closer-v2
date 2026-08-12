@@ -1,11 +1,21 @@
 # Conversation engine
 
-Conversation is a first-class tenant entity with channel, owner, state, mode, automation state, customer/business response timestamps, current intent, missing information, handoff, and NextAction references.
+Conversation is a tenant object with channel, owner, state, inferred stage, automation mode, response timestamps, current intent, missing information, handoff, and NextAction references. Phase 2 remains WhatsApp-mock first.
 
-Phase 1 channels are mock WhatsApp, mock Instagram, mock website form, and manual. Outgoing sends use the messaging port; `MockWhatsAppProvider` records deterministic provider IDs and performs no network calls.
+## Structured decision
 
-`MockAIProvider` returns a structured decision containing intent, confidence, missing information, suggested reply, suggested next action, requested tool, and review requirement. It can answer safe business facts and request qualification details. Clinic-sensitive questions, complaints, refunds, legal questions, unsupported input, and low confidence produce a human-handoff proposal.
+`ConversationDecision` contains detected/secondary intents, confidence, inferred stage, customer goal, known facts, missing information, suggested reply/action, requested tool and arguments, human-review/risk state, knowledge sources, follow-up recommendation, autonomy level, and a concise internal reason code. No chain-of-thought is stored or exposed.
 
-The provider never mutates state. `CloserService` assembles tenant-scoped context, validates the proposal, updates conversation state, replaces the NextAction, or starts handoff. This prevents cross-business knowledge access and keeps financial/business actions within application validation.
+## Grounding and progression
 
-The internal customer route exposes customer-message simulation, mock business sends, suggested reply inspection, takeover, explicit resume, and opt-out.
+The engine uses only tenant `BusinessKnowledge`, validated domain state, structured customer memory, and deterministic rules. Each service configures its qualification fields. Already-known facts are not requested again. Clinic medical/sensitive content hands off. Auto detailing collects vehicle/condition/photos. Home services collects location/job detail/photos/urgency and checks configured service-area names.
+
+Stages range from `NEW_INQUIRY` through information collection, booking/quote/deposit/job/payment states, and closed/human review. `ConversationStageService` infers them from current truth rather than trusting a stale conversation field.
+
+## Execution
+
+The provider proposes; `AssistantDecisionPolicy` validates. `AssistantToolExecutor` performs tenant-checked reads and validations. The policy then reconstructs auto-sendable text from tool results, which prevents provider wording from inventing a price, address, policy, slot, or payment status. Level 3 proposals are visible in the simulator but never create appointments, quotes, payments, or jobs.
+
+Each inbound provider message ID is idempotent. Repeated delivery returns the existing decision and cannot duplicate messages, memory, actions, follow-ups, handoffs, or provider sends. A reused ID with different content fails.
+
+See [Assistant Safety](ASSISTANT_SAFETY.md), [Assistant Tools](ASSISTANT_TOOLS.md), and [Conversation Scenarios](CONVERSATION_SCENARIOS.md).

@@ -5,7 +5,11 @@ import {
   ConversationChannel,
   ConversationIntent,
   ConversationMode,
+  ConversationStage,
   ConversationState,
+  CustomerFactKey,
+  FollowUpScenario,
+  FollowUpStatus,
   HandoffReason,
   JobStatus,
   KnowledgeTopic,
@@ -32,6 +36,7 @@ import {
   type ConsentRecord,
   type Contact,
   type Conversation,
+  type CustomerMemoryItem,
   type HumanHandoff,
   type Job,
   type Lead,
@@ -40,11 +45,13 @@ import {
   type Payment,
   type Quote,
   type RevenueEvent,
+  type ScheduledFollowUp,
   type Service,
   type TeamMember,
   type TenantEntity,
 } from '../domain/entities';
 import { SCHEMA_VERSION, type DatabaseSchema } from '../repositories/contracts';
+import type { ConversationDecisionRecord } from '../types/assistant';
 
 export const DEMO_NOW = '2026-08-12T08:00:00.000Z';
 
@@ -142,6 +149,9 @@ export function createDemoDatabase(): DatabaseSchema {
   const consentRecords: ConsentRecord[] = [];
   const humanHandoffs: HumanHandoff[] = [];
   const revenueEvents: RevenueEvent[] = [];
+  const customerMemory: CustomerMemoryItem[] = [];
+  const scheduledFollowUps: ScheduledFollowUp[] = [];
+  const assistantDecisionRecords: ConversationDecisionRecord[] = [];
 
   for (const config of CONFIGS) {
     const serviceId = `${config.id}-service-1`;
@@ -166,15 +176,47 @@ export function createDemoDatabase(): DatabaseSchema {
       businessName: config.name,
       serviceDescriptions: { [serviceId]: config.serviceDescription },
       fixedPricesCents: config.fixedPriceCents === null ? {} : { [serviceId]: config.fixedPriceCents },
+      priceRangesCents:
+        config.fixedPriceCents === null
+          ? {
+              [serviceId]:
+                config.kind === BusinessKind.AutoDetailing
+                  ? { minCents: 60000, maxCents: 180000 }
+                  : { minCents: 35000, maxCents: 150000 },
+            }
+          : {},
       pricingRules:
         config.fixedPriceCents === null
           ? ['Exact pricing requires the configured qualification details and human-approved quote.']
           : ['The listed fixed price may be answered automatically.'],
+      serviceDurationsMinutes: { [serviceId]: config.durationMinutes },
+      preparationInstructions: {
+        [serviceId]:
+          config.kind === BusinessKind.Clinic
+            ? [
+                'Arrive with clean skin when practical.',
+                'Share medical or treatment-suitability questions with the clinic team.',
+              ]
+            : config.kind === BusinessKind.AutoDetailing
+              ? ['Remove valuables and personal items from the vehicle.']
+              : ['Make sure the work area can be accessed safely.'],
+      },
       openingHours: 'Sunday–Thursday 09:00–18:00, Friday 09:00–13:00',
       address: config.address,
       serviceArea: config.serviceArea,
+      serviceAreaLocations:
+        config.kind === BusinessKind.HomeServices
+          ? ['Petah Tikva', 'Ramat Gan', 'Tel Aviv', 'Givat Shmuel']
+          : config.kind === BusinessKind.AutoDetailing
+            ? ['Ramat Gan', 'Tel Aviv', 'Givatayim', 'Bnei Brak']
+            : ['In-clinic'],
+      appointmentRules: [
+        'Appointment options must come from validated availability.',
+        'A booking is not confirmed until its required deposit is recorded.',
+      ],
       cancellationPolicy: 'Please give at least 24 hours notice when possible.',
       depositPolicy: 'A 25% deposit confirms a booking or job.',
+      acceptedPaymentMethods: ['Card', 'Bank transfer', 'Cash'],
       faq: [
         { question: 'How can I pay?', answer: 'Card, bank transfer, or cash.' },
         { question: 'Do I need a deposit?', answer: 'A 25% deposit is used to confirm work.' },
@@ -183,10 +225,14 @@ export function createDemoDatabase(): DatabaseSchema {
       allowedAutomaticAnswers: [
         KnowledgeTopic.OpeningHours,
         KnowledgeTopic.Address,
+        KnowledgeTopic.ServiceDescription,
         KnowledgeTopic.FixedPrice,
+        KnowledgeTopic.PriceRange,
         KnowledgeTopic.ServiceDuration,
+        KnowledgeTopic.PreparationInstructions,
         KnowledgeTopic.PaymentMethods,
         KnowledgeTopic.CancellationPolicy,
+        KnowledgeTopic.DepositPolicy,
         KnowledgeTopic.ServiceArea,
       ],
       answersRequiringHumanReview:
@@ -195,6 +241,8 @@ export function createDemoDatabase(): DatabaseSchema {
           : ['complaint', 'refund', 'unusual discount'],
       prohibitedAutonomousActions: ['Issue refunds', 'Promise medical outcomes', 'Approve unusual discounts'],
       requiredQualificationFields: config.requiredQualificationFields,
+      serviceQualificationFields: { [serviceId]: qualificationFields(config.kind) },
+      minimumAssistantConfidence: 0.72,
     });
     teamMembers.push({
       ...base({ id: ownerId, businessId: config.id }),
@@ -226,7 +274,8 @@ export function createDemoDatabase(): DatabaseSchema {
       ['waiting', 'Sam Rivera', LeadStatus.Active, ConversationMode.AiActive, ConversationState.Qualifying],
       ['handoff', 'Jordan Ellis', LeadStatus.Active, ConversationMode.HumanActive, ConversationState.Qualifying],
       ['optout', 'Taylor Reed', LeadStatus.Active, ConversationMode.AiActive, ConversationState.Qualifying],
-      ['completed', 'Casey Quinn', LeadStatus.Won, ConversationMode.Closed, ConversationState.AwaitingPayment],
+      ['completed', 'Casey Quinn', LeadStatus.Active, ConversationMode.AiActive, ConversationState.AwaitingPayment],
+      ['lost', 'Morgan Lane', LeadStatus.Lost, ConversationMode.Closed, ConversationState.Complete],
     ] as const;
 
     for (const [key, name, leadStatus, mode, conversationState] of scenarios) {
@@ -234,7 +283,8 @@ export function createDemoDatabase(): DatabaseSchema {
       const conversationId = `${config.id}-conversation-${key}`;
       const leadId = `${config.id}-lead-${key}`;
       const actionId = `${config.id}-action-${key}`;
-      const isClosed = leadStatus === LeadStatus.Won;
+      const isClosed = [LeadStatus.Won, LeadStatus.Lost, LeadStatus.Archived].includes(leadStatus);
+      const hasOutstandingBalance = key === 'completed';
       const isHandoff = key === 'handoff';
       contacts.push({
         ...base({ id: contactId, businessId: config.id }),
@@ -250,6 +300,15 @@ export function createDemoDatabase(): DatabaseSchema {
         channel: ConversationChannel.WhatsApp,
         ownerTeamMemberId: isHandoff ? ownerId : null,
         state: conversationState,
+        inferredStage: isHandoff
+          ? ConversationStage.HumanReview
+          : hasOutstandingBalance
+            ? ConversationStage.AwaitingBalance
+            : isClosed
+              ? ConversationStage.ClosedLost
+            : key === 'new'
+              ? ConversationStage.NewInquiry
+              : ConversationStage.InformationCollection,
         mode,
         automationEnabled: mode === ConversationMode.AiActive,
         lastCustomerMessageAt: key === 'new' ? null : DEMO_NOW,
@@ -277,17 +336,35 @@ export function createDemoDatabase(): DatabaseSchema {
           type:
             key === 'new'
               ? NextActionType.ReplyToCustomer
+              : key === 'completed'
+                ? NextActionType.CollectBalance
               : key === 'handoff'
                 ? NextActionType.HumanReview
                 : NextActionType.CollectInformation,
           status: NextActionStatus.Pending,
           reason:
-            key === 'handoff'
+            key === 'completed'
+              ? 'Service is complete; collect the remaining balance.'
+              : key === 'handoff'
               ? 'Customer asked a question that requires the owner.'
               : 'Keep this active opportunity moving.',
           dueAt: DEMO_NOW,
           automatic: !isHandoff,
         });
+        if (hasOutstandingBalance) {
+          scheduledFollowUps.push({
+            ...base({ id: `${config.id}-follow-up-balance`, businessId: config.id }),
+            contactId,
+            conversationId,
+            scenario: FollowUpScenario.OutstandingBalance,
+            status: FollowUpStatus.Scheduled,
+            purpose: MessagePurpose.Operational,
+            dueAt: '2026-08-13T08:00:00.000Z',
+            idempotencyKey: `${conversationId}:${FollowUpScenario.OutstandingBalance}:seed`,
+            triggeringMessageId: null,
+            reason: 'Request the remaining payment for completed work.',
+          });
+        }
       }
       consentRecords.push({
         ...base({ id: `${config.id}-consent-${key}`, businessId: config.id }),
@@ -310,6 +387,8 @@ export function createDemoDatabase(): DatabaseSchema {
               ? 'I am unhappy and need to speak with the owner.'
               : key === 'optout'
                 ? 'Please stop marketing messages.'
+                : key === 'lost'
+                  ? 'Thanks, I have decided not to continue.'
                 : `I am interested in ${config.serviceName.toLowerCase()}.`,
           providerMessageId: `mock-${config.id}-${key}`,
           sentAt: DEMO_NOW,
@@ -325,6 +404,9 @@ export function createDemoDatabase(): DatabaseSchema {
       startedAt: DEMO_NOW,
       resolvedAt: null,
       startedBy: 'ASSISTANT',
+      triggeringMessageId: `${config.id}-message-handoff`,
+      confidence: 0.96,
+      responsibleState: ConversationStage.HumanReview,
     });
     activities.push({
       ...base({ id: `${config.id}-activity-handoff`, businessId: config.id }),
@@ -449,7 +531,38 @@ export function createDemoDatabase(): DatabaseSchema {
     consentRecords,
     humanHandoffs,
     revenueEvents,
+    customerMemory,
+    scheduledFollowUps,
+    assistantDecisionRecords,
   };
+}
+
+function qualificationFields(kind: BusinessKind): CustomerFactKey[] {
+  if (kind === BusinessKind.Clinic) {
+    return [
+      CustomerFactKey.RequestedService,
+      CustomerFactKey.CustomerType,
+      CustomerFactKey.PreferredDate,
+    ];
+  }
+  if (kind === BusinessKind.AutoDetailing) {
+    return [
+      CustomerFactKey.RequestedService,
+      CustomerFactKey.VehicleMake,
+      CustomerFactKey.VehicleModel,
+      CustomerFactKey.VehicleYear,
+      CustomerFactKey.VehicleCondition,
+      CustomerFactKey.PhotosReceived,
+      CustomerFactKey.PreferredDate,
+    ];
+  }
+  return [
+    CustomerFactKey.RequestedJob,
+    CustomerFactKey.Location,
+    CustomerFactKey.JobDetails,
+    CustomerFactKey.PhotosReceived,
+    CustomerFactKey.Urgency,
+  ];
 }
 
 function addDeposit(

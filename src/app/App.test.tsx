@@ -45,7 +45,7 @@ describe('internal demo interface', () => {
     await user.type(screen.getByLabelText('Customer message'), 'What are your opening hours?');
     await user.click(screen.getByRole('button', { name: 'Process customer message' }));
     await waitFor(() => expect(screen.getByText('Latest assistant proposal')).toBeInTheDocument());
-    expect(screen.getByText(/Sunday–Thursday/)).toBeInTheDocument();
+    expect(screen.getAllByText(/Sunday–Thursday/).length).toBeGreaterThan(0);
     expect(screen.getByText('Customer reply processed and next action updated.')).toBeInTheDocument();
   });
 
@@ -56,5 +56,19 @@ describe('internal demo interface', () => {
     await user.click(screen.getByRole('button', { name: 'Create draft' }));
     expect(await screen.findByText('Quote draft created.')).toBeInTheDocument();
     expect(screen.queryByText('Select a contact with a lead.')).not.toBeInTheDocument();
+  });
+
+  it('runs a grounded conversation in the debug simulator', async () => {
+    const user = userEvent.setup();
+    renderAt('/debug');
+    await user.type(
+      screen.getByLabelText('Simulator customer message'),
+      'What are your opening hours?',
+    );
+    await user.click(screen.getByRole('button', { name: 'Simulate customer message' }));
+    expect(await screen.findByText('Customer message processed.')).toBeInTheDocument();
+    expect(screen.getByText('Latest grounded decision')).toBeInTheDocument();
+    expect(screen.getByText('Verified business information retrieved.', { exact: false })).toBeInTheDocument();
+    expect(screen.getAllByText(/Sunday–Thursday/).length).toBeGreaterThan(0);
   });
 });

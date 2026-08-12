@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createDemoDatabase } from '../data/demoData';
 import { LocalDatabase, MemoryStorageAdapter, STORAGE_KEY } from './persistence';
+import { SCHEMA_VERSION } from '../repositories/contracts';
 import { createHarness } from '../test/harness';
 
 describe('versioned persistence', () => {
@@ -32,5 +33,44 @@ describe('versioned persistence', () => {
       (record) => record.contactId === 'biz-clinic-contact-new',
     )[0];
     expect(consent?.optedOut).toBe(false);
+  });
+
+  it('migrates a valid Phase 1 schema without losing tenant data', () => {
+    const storage = new MemoryStorageAdapter();
+    const seed = createDemoDatabase();
+    const legacy = structuredClone(seed) as unknown as Record<string, unknown>;
+    legacy.schemaVersion = 1;
+    delete legacy.customerMemory;
+    delete legacy.scheduledFollowUps;
+    delete legacy.assistantDecisionRecords;
+    (legacy.businessKnowledge as Array<Record<string, unknown>>).forEach((knowledge) => {
+      delete knowledge.priceRangesCents;
+      delete knowledge.serviceDurationsMinutes;
+      delete knowledge.preparationInstructions;
+      delete knowledge.serviceAreaLocations;
+      delete knowledge.appointmentRules;
+      delete knowledge.acceptedPaymentMethods;
+      delete knowledge.serviceQualificationFields;
+      delete knowledge.minimumAssistantConfidence;
+    });
+    (legacy.conversations as Array<Record<string, unknown>>).forEach((conversation) => {
+      delete conversation.inferredStage;
+    });
+    (legacy.humanHandoffs as Array<Record<string, unknown>>).forEach((handoff) => {
+      delete handoff.triggeringMessageId;
+      delete handoff.confidence;
+      delete handoff.responsibleState;
+    });
+    storage.write(STORAGE_KEY, JSON.stringify(legacy));
+
+    const database = new LocalDatabase(storage, seed);
+    const snapshot = database.snapshot();
+    expect(snapshot.schemaVersion).toBe(SCHEMA_VERSION);
+    expect(snapshot.contacts).toHaveLength(seed.contacts.length);
+    expect(snapshot.customerMemory).toEqual([]);
+    expect(snapshot.businessKnowledge[0]?.minimumAssistantConfidence).toBe(0.72);
+    expect(snapshot.businessKnowledge[0]?.allowedAutomaticAnswers).toContain('SERVICE_DESCRIPTION');
+    expect(snapshot.conversations[0]?.inferredStage).toBeDefined();
+    expect(JSON.parse(storage.read(STORAGE_KEY) ?? '{}').schemaVersion).toBe(SCHEMA_VERSION);
   });
 });

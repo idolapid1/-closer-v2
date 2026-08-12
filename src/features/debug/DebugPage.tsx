@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Card, Page, formatMoney, readable } from '../../components/ui';
 import { useCloser } from '../../state/closerState';
+import { ConversationSimulator } from './ConversationSimulator';
 
 export function DebugPage() {
   const { state, businessId, resetDemo } = useCloser();
@@ -19,6 +20,7 @@ export function DebugPage() {
   );
   return (
     <Page title="Debug" intro="Versioned tenant state and immutable financial event history for internal inspection.">
+      <ConversationSimulator />
       <Card title="Demo controls"><div className="button-row"><button type="button" onClick={() => { if (window.confirm('Reset all local changes to the deterministic demo seed?')) resetDemo(); }}>Reset demo data</button><button type="button" onClick={() => setShowRaw((value) => !value)}>{showRaw ? 'Hide' : 'Show'} tenant JSON</button></div><p>Schema version: {state.schemaVersion}</p></Card>
       <Card title="Revenue events">
         <div className="table-wrap"><table><thead><tr><th>Stage</th><th>Amount</th><th>Reference</th><th>Causation</th><th>Correlation</th></tr></thead><tbody>{events.map((event) => <tr key={event.id}><td>{readable(event.stage)}</td><td>{formatMoney(event.amountCents, business?.currency ?? 'ILS')}</td><td>{readable(event.referenceType)} · {event.referenceId}</td><td>{event.causationId}</td><td>{event.correlationId}</td></tr>)}</tbody></table></div>

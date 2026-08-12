@@ -16,4 +16,4 @@ Payments have an idempotency key. Repeating the same payment returns the origina
 
 Every financial transition creates a RevenueEvent with `causationId` and `correlationId`. A causation ID may produce one event only; conflicting reuse fails. Deposit collection never marks delivery complete. Completion never creates collected cash. A fully paid opportunity closes only after the appointment or job is completed.
 
-Tax is optional per business and calculated after discount. Phase 1 records payments manually and does not process cards, invoice, reconcile a bank, or perform accounting.
+Assistant payment answers are rebuilt from validated appointment/job and Payment records. A customer message claiming payment cannot create or alter a Payment. Tax is optional per business and calculated after discount. Phase 2 records payments manually and does not process cards, invoice, reconcile a bank, or perform accounting.
