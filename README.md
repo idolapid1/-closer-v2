@@ -1,6 +1,6 @@
-# CLOSER v2 — Phase 3
+# CLOSER v2 — Phase 4
 
-CLOSER is a revenue and customer-conversation operating system for service businesses. Phase 3 joins the verified conversation, appointment, quote/job, payment, and action components into complete inquiry-to-collection commercial journeys.
+CLOSER is a revenue and customer-conversation operating system for service businesses. Phase 4 adds a production-grade, Hebrew-first product experience for Today, Inbox, and Customer Workspace on top of the verified inquiry-to-collection architecture.
 
 This is an internal, local-only engineering build. It uses fictional data, deterministic mock AI and messaging providers, and versioned browser storage. It connects to no external API and contains no secrets.
 
@@ -16,7 +16,7 @@ npm install
 npm run dev
 ```
 
-Vite prints the local URL, normally `http://localhost:5173`. Open `/actions` to see what a business needs to do now, `/customer/:id` for the internal customer workspace, or `/debug` for the Conversation Simulator. Use the business selector to switch among Luma Aesthetics, Northstar Auto Detail, and BrightHome Services.
+Vite prints the local URL, normally `http://localhost:5173`. The default route opens **Today** at `/actions`; use `/inbox` for customer inquiries and `/customer/:id` for the unified Customer Workspace. `/debug` preserves the Conversation Simulator. The business selector switches among the three deterministic clinic, detailing, and home-services tenants.
 
 ## Quality commands
 
@@ -31,27 +31,30 @@ npm audit
 
 `npm run verify` runs lint, strict TypeScript checking, all Vitest tests, and the production build in sequence.
 
-## Internal routes
+## Product routes
+
+- `/actions` — Hebrew-first Today view: attention, today’s commitments, and real outstanding balances
+- `/inbox` — split-view business inbox with contextual recommendation and explicit Human Takeover state
+- `/customer/:id` — unified customer, work, payment, facts, conversation, consent, and activity workspace
+
+## Engineering routes
 
 - `/demo` — tenant summary, scenario contacts, and current actions
-- `/inbox` — WhatsApp-first conversations and the one action needing attention
-- `/actions` — plain-language Action Center for every active opportunity
-- `/customer/:id` — conversation, opportunity, structured facts, work, payments, action, handoff, and activity timeline
 - `/appointments` — appointment, deposit, confirmation, completion, and balance controls
 - `/quotes` — quote/job, deposit, scheduling, completion, and balance controls
 - `/debug` — Conversation Simulator, tool results, memory, follow-ups, handoffs, financial events, raw tenant state, and reset
 
 ## Architecture and trust boundary
 
-Domain entities and rules are pure TypeScript. `CloserService` is the mutation boundary. `CommercialJourneyService` derives opportunity totals, collection, stage, relationships, and one action from domain truth; `ActivityTimelineService` records tenant-scoped idempotent business events. Focused conversation services retain the Phase 2 trust boundary.
+Domain entities and rules are pure TypeScript. `CloserService` is the mutation boundary. `CommercialJourneyService` derives opportunity totals, collection, stage, relationships, and one action from domain truth; `ActivityTimelineService` records tenant-scoped idempotent business events. `ProductReadService` builds tenant-scoped presentation models for the three production screens, while `productCopy` translates internal states into plain Hebrew. Focused conversation services retain the Phase 2 trust boundary.
 
 The AI provider is untrusted and has no repository, network, clock, or mutation access. The application reconstructs auto-sent Level 1/2 replies from validated knowledge/tool results. Appointment, quote, deposit, payment, and scheduling changes are proposals until the existing application use cases validate them. React never accesses `localStorage` or implements business rules.
 
-See [Architecture](docs/ARCHITECTURE.md), [Conversation Engine](docs/CONVERSATION_ENGINE.md), [Assistant Safety](docs/ASSISTANT_SAFETY.md), [Assistant Tools](docs/ASSISTANT_TOOLS.md), and [Financial Rules](docs/FINANCIAL_RULES.md).
+See [Architecture](docs/ARCHITECTURE.md), [Product UX](docs/PRODUCT_UX.md), [Design System](docs/DESIGN_SYSTEM.md), [Conversation Engine](docs/CONVERSATION_ENGINE.md), [Assistant Safety](docs/ASSISTANT_SAFETY.md), [Assistant Tools](docs/ASSISTANT_TOOLS.md), and [Financial Rules](docs/FINANCIAL_RULES.md).
 
 ## Local data
 
-Schema v3 is stored under `closer-v2:database` in `localStorage`. Valid Phase 1 and Phase 2 schemas are migrated with safe commercial defaults; invalid or corrupt data falls back to the deterministic seed. Use **Debug → Reset scenarios** to restore all three tenants. No real customer data is included.
+Schema v3 is stored under `closer-v2:database` in `localStorage`. Valid Phase 1 and Phase 2 schemas are migrated with safe commercial defaults; invalid or corrupt data falls back to the deterministic seed. Use **Debug → Reset demo data** to restore all three tenants. No real customer data is included.
 
 ## Remote backup
 
@@ -67,6 +70,6 @@ Never commit `.env` files, credentials, tokens, customer exports, or production 
 
 ## Deliberate exclusions
 
-Phase 3 does not include production AI, real WhatsApp/Meta/Instagram, a backend, authentication, background workers, calendar/payment integrations, deployment, or final product design. Follow-ups are inspectable scheduled records, not timers. Payments and refunds are validated manual records, not gateway transactions.
+Phase 4 does not include production AI, real WhatsApp/Meta/Instagram, a backend, authentication, background workers, calendar/payment integrations, deployment, or redesigns for the engineering appointment, quote/job, and debug modules. Follow-ups are inspectable scheduled records, not timers. Payments and refunds are validated manual records, not gateway transactions.
 
 See [Commercial journey](docs/COMMERCIAL_JOURNEY.md) for reconciliation, closing, recovery, idempotency, action, and activity rules.

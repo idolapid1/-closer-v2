@@ -1,12 +1,12 @@
-# Recommended Phase 4
+# Recommended Phase 5
 
-Phase 4 should establish the production backend and evaluation boundary before connecting real AI or WhatsApp.
+Phase 5 should establish the secure pilot backend and evaluation boundary behind the interfaces already proven in Phases 1–4.
 
-1. Define an authenticated API and server-side tenant context; replace browser repositories behind the existing ports.
-2. Design schema migrations, audit retention, encryption, authorization, backup, and recovery for knowledge, memory, consent, messages, handoffs, and financial records.
-3. Turn the deterministic conversation and commercial journey scenarios into a versioned evaluation corpus with grounding, handoff, false-claim, duplicate-delivery, financial, scheduling, and recovery scores.
-4. Add a WhatsApp sandbox/webhook adapter with signature validation, retries, delivery state, ordering, and webhook idempotency—still behind `MessagingProvider`.
-5. Add a real AI adapter in shadow/suggestion-only mode. Keep `AssistantDecisionPolicy`, tool permissions, grounded response reconstruction, and explicit Level 3 validation as mandatory gates.
-6. Run a dedicated product-design phase for the action-first inbox/customer workspace; do not expand into a generic CRM or dashboard suite.
+1. Add authenticated server-side tenant context and a backend repository implementation without changing domain or presentation contracts.
+2. Define production schema migrations, authorization, encryption, audit retention, backup, restore, and operational observability.
+3. Convert deterministic conversation/commercial scenarios into a versioned evaluation gate for grounding, handoff, duplicate delivery, scheduling, consent, and financial truth.
+4. Add a controlled import/migration path for one pilot business and preserve the local deterministic demo mode for development.
+5. Prepare WhatsApp sandbox/webhook and real-AI suggestion-only adapters behind existing ports, but do not enable autonomous production actions until the backend and evaluation gates pass.
+6. Validate the three Phase 4 product screens with pilot users before extending production UX to Calendar/Jobs, Quotes, and Payments.
 
-Do not add production auto-action, broad analytics, new channels, or background marketing until server-side consent/audit rules and the evaluation gate are proven.
+Keep Phase 5 narrow: no generic CRM expansion, analytics wall, automation builder, new social channels, or unsupervised financial/scheduling actions.

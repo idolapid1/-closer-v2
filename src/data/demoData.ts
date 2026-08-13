@@ -79,6 +79,15 @@ interface DemoBusinessConfig {
   tone: string;
 }
 
+const HEBREW_SCENARIO_NAMES = {
+  new: 'אלכס מור',
+  waiting: 'דנה כהן',
+  handoff: 'מאיה לוי',
+  optout: 'נטע שמעון',
+  completed: 'יובל רוזן',
+  lost: 'רוני אברהם',
+} as const;
+
 const CONFIGS: DemoBusinessConfig[] = [
   {
     id: 'biz-clinic',
@@ -86,7 +95,7 @@ const CONFIGS: DemoBusinessConfig[] = [
     kind: BusinessKind.Clinic,
     workflowType: WorkflowType.AppointmentService,
     currency: 'ILS',
-    ownerName: 'Maya Cohen',
+    ownerName: 'מאיה כהן',
     serviceName: 'Signature facial',
     serviceDescription: 'A 60-minute non-medical facial treatment.',
     fixedPriceCents: 42000,
@@ -102,7 +111,7 @@ const CONFIGS: DemoBusinessConfig[] = [
     kind: BusinessKind.AutoDetailing,
     workflowType: WorkflowType.QuoteJob,
     currency: 'ILS',
-    ownerName: 'Daniel Levi',
+    ownerName: 'דניאל לוי',
     serviceName: 'Full interior detail',
     serviceDescription: 'Deep interior clean tailored to vehicle size and condition.',
     fixedPriceCents: null,
@@ -118,7 +127,7 @@ const CONFIGS: DemoBusinessConfig[] = [
     kind: BusinessKind.HomeServices,
     workflowType: WorkflowType.QuoteJob,
     currency: 'ILS',
-    ownerName: 'Noa Barak',
+    ownerName: 'נועה ברק',
     serviceName: 'Home repair visit',
     serviceDescription: 'Assessment and repair for common household maintenance issues.',
     fixedPriceCents: null,
@@ -272,12 +281,12 @@ export function createDemoDatabase(): DatabaseSchema {
     });
 
     const scenarios = [
-      ['new', 'Alex Morgan', LeadStatus.New, ConversationMode.AiActive, ConversationState.NewInquiry],
-      ['waiting', 'Sam Rivera', LeadStatus.Active, ConversationMode.AiActive, ConversationState.Qualifying],
-      ['handoff', 'Jordan Ellis', LeadStatus.Active, ConversationMode.HumanActive, ConversationState.Qualifying],
-      ['optout', 'Taylor Reed', LeadStatus.Active, ConversationMode.AiActive, ConversationState.Qualifying],
-      ['completed', 'Casey Quinn', LeadStatus.Active, ConversationMode.AiActive, ConversationState.AwaitingPayment],
-      ['lost', 'Morgan Lane', LeadStatus.Lost, ConversationMode.Closed, ConversationState.Complete],
+      ['new', HEBREW_SCENARIO_NAMES.new, LeadStatus.New, ConversationMode.AiActive, ConversationState.NewInquiry],
+      ['waiting', HEBREW_SCENARIO_NAMES.waiting, LeadStatus.Active, ConversationMode.AiActive, ConversationState.Qualifying],
+      ['handoff', HEBREW_SCENARIO_NAMES.handoff, LeadStatus.Active, ConversationMode.HumanActive, ConversationState.Qualifying],
+      ['optout', HEBREW_SCENARIO_NAMES.optout, LeadStatus.Active, ConversationMode.AiActive, ConversationState.Qualifying],
+      ['completed', HEBREW_SCENARIO_NAMES.completed, LeadStatus.Active, ConversationMode.AiActive, ConversationState.AwaitingPayment],
+      ['lost', HEBREW_SCENARIO_NAMES.lost, LeadStatus.Lost, ConversationMode.Closed, ConversationState.Complete],
     ] as const;
 
     for (const [key, name, leadStatus, mode, conversationState] of scenarios) {
@@ -387,12 +396,16 @@ export function createDemoDatabase(): DatabaseSchema {
           purpose: MessagePurpose.Operational,
           body:
             key === 'handoff'
-              ? 'I am unhappy and need to speak with the owner.'
+              ? 'אני לא מרוצה ורוצה לדבר עם בעלת העסק.'
               : key === 'optout'
-                ? 'Please stop marketing messages.'
+                ? 'בבקשה להפסיק לשלוח לי הודעות שיווקיות.'
                 : key === 'lost'
-                  ? 'Thanks, I have decided not to continue.'
-                : `I am interested in ${config.serviceName.toLowerCase()}.`,
+                  ? 'תודה, החלטתי לא להמשיך כרגע.'
+                : config.kind === BusinessKind.Clinic
+                  ? 'היי, אני מתעניינת בטיפול פנים ורוצה להבין מה מתאים לי.'
+                  : config.kind === BusinessKind.AutoDetailing
+                    ? 'היי, אני רוצה דיטיילינג פנימי לרכב שלי.'
+                    : 'שלום, יש לי תקלה בבית ואני רוצה לקבל הצעת מחיר.',
           providerMessageId: `mock-${config.id}-${key}`,
           sentAt: DEMO_NOW,
         });

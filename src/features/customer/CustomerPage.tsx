@@ -1,194 +1,328 @@
-import { useState, type FormEvent } from 'react';
-import { useParams } from 'react-router-dom';
-import { Card, Empty, ErrorNotice, Page, SuccessNotice, displayError, formatMoney, readable } from '../../components/ui';
+import { useRef, useState } from 'react';
 import {
-  ConversationMode,
-  HandoffReason,
-  LeadStatus,
-  MessageAuthor,
-  MessagePurpose,
-} from '../../domain/entities';
+  ArrowLeft,
+  Banknote,
+  CalendarClock,
+  CheckCircle2,
+  Clock3,
+  FileText,
+  History,
+  Info,
+  Mail,
+  MessageCircleMore,
+  Phone,
+  UserRoundCog,
+} from 'lucide-react';
+import { Link, useParams } from 'react-router-dom';
+import {
+  activityLabel,
+  appointmentStatusLabel,
+  conversationStageLabel,
+  factLabel,
+  factValue,
+  formatProductDateTime,
+  formatProductMoney,
+  jobStatusLabel,
+  lostReasonLabel,
+  nextActionCta,
+  nextActionDescription,
+  nextActionTitle,
+  quoteStatusLabel,
+} from '../../application/presentation/productCopy';
+import type { ProductCustomerView } from '../../application/presentation/ProductReadService';
+import {
+  CustomerAvatar,
+  EmptyState,
+  ErrorBanner,
+  ProductPage,
+  SectionHeader,
+  SuccessBanner,
+} from '../../components/product/ProductUi';
+import { HandoffReason, LeadStatus } from '../../domain/entities';
 import { useCloser } from '../../state/closerState';
-import type { AssistantDecision } from '../../types/assistant';
 
 export function CustomerPage() {
   const { id: contactId = '' } = useParams();
   const { state, businessId, service } = useCloser();
-  const contact = state.contacts.find((candidate) => candidate.businessId === businessId && candidate.id === contactId);
-  const conversation = state.conversations.find(
-    (candidate) => candidate.businessId === businessId && candidate.contactId === contactId,
-  );
-  const lead = state.leads.find((candidate) => candidate.businessId === businessId && candidate.contactId === contactId);
-  const action = state.nextActions.find((candidate) => candidate.id === conversation?.nextActionId);
-  const consent = state.consentRecords.find(
-    (candidate) => candidate.businessId === businessId && candidate.contactId === contactId,
-  );
-  const handoff = state.humanHandoffs.find((candidate) => candidate.id === conversation?.handoffId);
+  const customer = service.productCustomer(businessId, contactId);
   const business = state.businesses.find((candidate) => candidate.id === businessId);
-  const selectedService = state.services.find((candidate) => candidate.businessId === businessId && candidate.id === lead?.serviceId);
-  const opportunity = lead ? service.opportunity(businessId, lead.id) : null;
-  const appointment = state.appointments.find((candidate) => candidate.businessId === businessId && candidate.id === opportunity?.appointmentId);
-  const quote = state.quotes.find((candidate) => candidate.businessId === businessId && candidate.id === opportunity?.quoteId);
-  const job = state.jobs.find((candidate) => candidate.businessId === businessId && candidate.id === opportunity?.jobId);
-  const memory = state.customerMemory.filter((candidate) => candidate.businessId === businessId && candidate.contactId === contactId);
-  const payments = state.payments.filter((candidate) => candidate.businessId === businessId && candidate.contactId === contactId);
-  const activities = contact ? service.activityTimeline(businessId, contact.id) : [];
-  const messages = state.messages
-    .filter((message) => message.businessId === businessId && message.conversationId === conversation?.id)
-    .sort((first, second) => first.sentAt.localeCompare(second.sentAt));
-  const [customerMessage, setCustomerMessage] = useState('');
-  const [businessMessage, setBusinessMessage] = useState('');
-  const [marketing, setMarketing] = useState(false);
-  const [decision, setDecision] = useState<AssistantDecision | null>(null);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const statusRegion = useRef<HTMLElement>(null);
 
-  if (!contact || !conversation || !lead) {
-    return <Page title="Customer not found" intro="Switch back to the business that owns this contact."><Empty>This tenant cannot access that customer.</Empty></Page>;
+  if (!customer) {
+    return (
+      <ProductPage title="הלקוח לא נמצא" intro="הלקוח שייך לעסק אחר או שאינו קיים.">
+        <EmptyState title="אין גישה ללקוח הזה">נסו לעבור לעסק המתאים.</EmptyState>
+      </ProductPage>
+    );
   }
 
-  const simulateCustomer = async (event: FormEvent) => {
-    event.preventDefault();
-    setError('');
-    setSuccess('');
-    try {
-      const result = await service.receiveCustomerMessage(businessId, conversation.id, customerMessage);
-      setDecision(result);
-      setCustomerMessage('');
-      setSuccess('Customer reply processed and next action updated.');
-    } catch (caught) {
-      setError(displayError(caught));
-    }
-  };
-
-  const sendBusiness = async (event: FormEvent) => {
-    event.preventDefault();
+  const run = (action: () => void, confirmation: string) => {
     setError('');
     try {
-      await service.sendMessage(businessId, conversation.id, businessMessage, {
-        author: MessageAuthor.Business,
-        purpose: marketing ? MessagePurpose.Marketing : MessagePurpose.Operational,
-      });
-      setBusinessMessage('');
-      setSuccess('Mock business message sent.');
+      action();
+      setSuccess(confirmation);
+      window.requestAnimationFrame(() => statusRegion.current?.focus());
     } catch (caught) {
-      setError(displayError(caught));
+      setError(caught instanceof Error ? caught.message : 'הפעולה לא הושלמה.');
     }
   };
-
-  const run = (actionToRun: () => void, message: string) => {
-    setError('');
-    try {
-      actionToRun();
-      setSuccess(message);
-    } catch (caught) {
-      setError(displayError(caught));
-    }
-  };
+  const currency = business?.currency ?? 'ILS';
+  const isWon = customer.leadStatus === LeadStatus.Won;
+  const isLost = customer.leadStatus === LeadStatus.Lost;
 
   return (
-    <Page title={contact.displayName} intro={`${contact.phone} · ${readable(conversation.channel)}`}>
-      <ErrorNotice message={error} />
-      <SuccessNotice message={success} />
-      <div className="summary-grid">
-        <Card title="Conversation">
-          <dl><dt>Mode</dt><dd>{readable(conversation.mode)}</dd><dt>State</dt><dd>{readable(conversation.state)}</dd><dt>Intent</dt><dd>{conversation.currentIntent ? readable(conversation.currentIntent) : 'Unknown'}</dd></dl>
-          {handoff ? <p className="notice">Handoff: {handoff.detail}</p> : null}
-        </Card>
-        <Card title="Next action">
-          <strong>{action ? readable(action.type) : 'No immediate action'}</strong>
-          <p>{action?.reason ?? 'This opportunity is closed.'}</p>
-          {lead.status === LeadStatus.Lost ? <button type="button" onClick={() => run(() => service.reopenOpportunity(businessId, lead.id), 'Opportunity reopened for the returning customer.')}>Reopen opportunity</button> : null}
-        </Card>
-        <Card title="Consent">
-          <p>Marketing: {consent?.marketingAllowed && !consent.optedOut ? 'allowed' : 'blocked'}</p>
-          <button type="button" disabled={consent?.optedOut} onClick={() => run(() => service.optOutMarketing(businessId, contact.id), 'Marketing opt-out saved.')}>Opt out</button>
-        </Card>
-        <Card title="Commercial journey">
-          <dl>
-            <dt>Journey</dt><dd>{readable(lead.workflowType)}</dd>
-            <dt>Phase</dt><dd>{opportunity ? readable(opportunity.stage) : '—'}</dd>
-            <dt>Service</dt><dd>{selectedService?.name ?? 'Not selected'}</dd>
-            <dt>Total</dt><dd>{opportunity?.totalCents === null || opportunity?.totalCents === undefined ? 'Not validated' : formatMoney(opportunity.totalCents, business?.currency ?? 'ILS')}</dd>
-            <dt>Collected</dt><dd>{formatMoney(opportunity?.collectedCents ?? 0, business?.currency ?? 'ILS')}</dd>
-            <dt>Remaining</dt><dd>{opportunity?.remainingBalanceCents === null || opportunity?.remainingBalanceCents === undefined ? '—' : formatMoney(opportunity.remainingBalanceCents, business?.currency ?? 'ILS')}</dd>
-          </dl>
-        </Card>
-      </div>
-
-      <div className="two-column">
-        <Card title="Known facts">
-          {memory.length === 0 ? <Empty>No structured facts yet.</Empty> : <dl>{memory.map((fact) => <div key={fact.id}><dt>{readable(fact.key)}</dt><dd>{String(fact.value)}</dd></div>)}</dl>}
-        </Card>
-        <Card title="Work and payments">
-          <p>Appointment: {appointment ? readable(appointment.status) : '—'}</p>
-          <p>Quote: {quote ? `${readable(quote.status)} · ${formatMoney(quote.totalCents, business?.currency ?? 'ILS')}` : '—'}</p>
-          <p>Job: {job ? readable(job.status) : '—'}</p>
-          <p>Payments: {payments.length}</p>
-        </Card>
-      </div>
-
-      <Card title="Conversation messages">
-        <div className="messages">
-          {messages.length === 0 ? <Empty>No messages yet.</Empty> : messages.map((message) => (
-            <article key={message.id} className={`message ${message.direction.toLowerCase()}`}>
-              <small>{readable(message.author)} · {message.purpose.toLowerCase()}</small>
-              <p>{message.body}</p>
-            </article>
-          ))}
+    <ProductPage
+      eyebrow="מרחב לקוח"
+      title={customer.customerName}
+      intro={`${customer.serviceName ?? 'עדיין לא נבחר שירות'} · ${conversationStageLabel(customer.stage)}`}
+      actions={(
+        <div className="customer-header-actions">
+          <a className="icon-button" href={`tel:${customer.phone}`} aria-label={`התקשר אל ${customer.customerName}`}>
+            <Phone aria-hidden="true" />
+          </a>
+          <Link className="button button-secondary" to={`/inbox?conversation=${customer.conversationId}`}>
+            <MessageCircleMore aria-hidden="true" />
+            פתח שיחה
+          </Link>
         </div>
-      </Card>
+      )}
+    >
+      <ErrorBanner message={error} />
+      <SuccessBanner message={success} />
 
-      <div className="two-column">
-        <Card title="Simulate customer reply">
-          <form onSubmit={simulateCustomer} className="stack">
-            <textarea aria-label="Customer message" value={customerMessage} onChange={(event) => setCustomerMessage(event.target.value)} placeholder="Ask about hours, price, a quote, or a sensitive issue" required />
-            <button type="submit">Process customer message</button>
-          </form>
-        </Card>
-        <Card title="Send mock business message">
-          <form onSubmit={sendBusiness} className="stack">
-            <textarea aria-label="Business message" value={businessMessage} onChange={(event) => setBusinessMessage(event.target.value)} required />
-            <label className="checkbox"><input type="checkbox" checked={marketing} onChange={(event) => setMarketing(event.target.checked)} /> Marketing message</label>
-            <button type="submit">Send through mock provider</button>
-          </form>
-        </Card>
-      </div>
+      <section
+        ref={statusRegion}
+        tabIndex={-1}
+        className={`customer-hero${customer.automationStopped ? ' is-human' : ''}${isWon ? ' is-won' : ''}`}
+      >
+        <div className="customer-identity">
+          <CustomerAvatar name={customer.customerName} size="large" />
+          <div>
+            <span className="customer-status-line">
+              {customer.automationStopped ? <UserRoundCog aria-hidden="true" /> : isWon ? <CheckCircle2 aria-hidden="true" /> : <Clock3 aria-hidden="true" />}
+              {customer.isHumanActive ? 'השיחה בטיפול אנושי' : customer.automationStopped ? 'העוזר מושהה' : isWon ? 'התהליך הושלם ושולם' : isLost ? lostReasonLabel(customer.lostReason) : conversationStageLabel(customer.stage)}
+            </span>
+            <div className="customer-contact-line">
+              <a href={`tel:${customer.phone}`}><bdi dir="ltr">{customer.phone}</bdi></a>
+              {customer.email ? (
+                <a href={`mailto:${customer.email}`}>
+                  <Mail aria-hidden="true" />
+                  <bdi dir="ltr">{customer.email}</bdi>
+                </a>
+              ) : null}
+            </div>
+          </div>
+        </div>
+        {customer.action ? (
+          <div className="customer-primary-action">
+            <span>הפעולה הבאה</span>
+            <strong>{nextActionTitle(customer.action.actionType, customer.customerName, customer.action.amountCents, currency)}</strong>
+            <p>{nextActionDescription(customer.action.actionType)}</p>
+            <Link className="button button-primary" to={`/inbox?conversation=${customer.conversationId}`}>
+              {nextActionCta(customer.action.actionType)}
+              <ArrowLeft aria-hidden="true" />
+            </Link>
+          </div>
+        ) : isWon ? (
+          <div className="customer-primary-action is-complete">
+            <span>הכול סגור</span>
+            <strong>העבודה הושלמה והתשלום התקבל</strong>
+            <p>אין כרגע פעולה שדורשת תשומת לב.</p>
+          </div>
+        ) : (
+          <div className="customer-primary-action is-muted">
+            <span>אין פעולה מיידית</span>
+            <strong>{isLost ? lostReasonLabel(customer.lostReason) : 'הלקוח/ה לא מחכה כרגע'}</strong>
+            {isLost ? (
+              <button
+                className="button button-secondary"
+                type="button"
+                onClick={() => run(() => {
+                  const lead = state.leads.find((candidate) => candidate.businessId === businessId && candidate.contactId === contactId);
+                  if (!lead) throw new Error('ההזדמנות לא נמצאה.');
+                  service.reopenOpportunity(businessId, lead.id);
+                }, 'התהליך נפתח מחדש עבור הלקוח/ה החוזר/ת.')}
+              >
+                פתח מחדש
+              </button>
+            ) : null}
+          </div>
+        )}
+      </section>
 
-      {decision ? (
-        <Card title="Latest assistant proposal">
-          <dl><dt>Intent</dt><dd>{readable(decision.intent)}</dd><dt>Confidence</dt><dd>{Math.round(decision.confidence * 100)}%</dd><dt>Missing</dt><dd>{decision.missingInformation.join(', ') || 'None'}</dd><dt>Tool request</dt><dd>{readable(decision.requestedTool)}</dd><dt>Review</dt><dd>{decision.requiresHumanReview ? 'Required' : 'Not required'}</dd></dl>
-          <blockquote>{decision.suggestedReply}</blockquote>
+      {customer.automationStopped ? (
+        <section className="customer-handoff-callout" aria-label={customer.isHumanActive ? 'טיפול אנושי פעיל' : 'העוזר מושהה'}>
+          <UserRoundCog aria-hidden="true" />
+          <div>
+            <strong>{customer.isHumanActive ? 'אתם מנהלים את השיחה עכשיו' : 'העוזר מושהה בשיחה הזו'}</strong>
+            <p>הודעות אוטומטיות ותזכורות מושהות עד להחזרה מפורשת של העוזר.</p>
+          </div>
           <button
+            className="button button-secondary"
             type="button"
-            disabled={conversation.mode !== ConversationMode.AiActive || decision.requiresHumanReview}
-            onClick={() => {
-              setBusinessMessage(decision.suggestedReply);
-              setMarketing(false);
-            }}
-          >Use suggested reply</button>
-        </Card>
+            onClick={() => run(() => service.resumeAssistant(businessId, customer.conversationId), 'העוזר חזר לפעול.')}
+          >
+            החזר את העוזר
+          </button>
+        </section>
+      ) : !customer.isClosed ? (
+        <div className="customer-control-row">
+          <span>העוזר מטפל בתשובות בטוחות. אפשר לקחת שליטה בכל רגע.</span>
+          <button
+            className="button button-quiet"
+            type="button"
+            onClick={() => run(
+              () => service.startHumanTakeover(
+                businessId,
+                customer.conversationId,
+                HandoffReason.Manual,
+                'השיחה הועברה לטיפול של בעל/ת העסק.',
+              ),
+              'השיחה הועברה לטיפול אנושי.',
+            )}
+          >
+            אני מטפל/ת בשיחה
+          </button>
+        </div>
       ) : null}
 
-      <Card title="Human control">
-        <div className="button-row">
-          <button type="button" disabled={conversation.mode === ConversationMode.HumanActive || conversation.mode === ConversationMode.Closed} onClick={() => run(() => service.startHumanTakeover(businessId, conversation.id, HandoffReason.Manual, 'Owner manually took over.'), 'Automation stopped; human takeover is active.')}>Start Human Takeover</button>
-          <button type="button" disabled={conversation.mode === ConversationMode.AiActive || conversation.mode === ConversationMode.Closed} onClick={() => run(() => service.resumeAssistant(businessId, conversation.id), 'Assistant mode explicitly resumed.')}>Resume AI</button>
-        </div>
-      </Card>
+      <div className="customer-workspace-grid">
+        <div className="customer-main-column">
+          <section className="customer-section current-work-section">
+            <SectionHeader title="מה קורה עכשיו" icon={<CalendarClock aria-hidden="true" />} />
+            <CurrentWork customer={customer} currency={currency} timeZone={business?.timeZone} />
+          </section>
 
-      <Card title="Activity">
-        {activities.length === 0 ? <Empty>No journey activity yet.</Empty> : (
-          <ol className="timeline">
-            {activities.map((activity) => (
-              <li key={activity.id}>
-                <strong>{activity.summary}</strong><br />
-                <small>{new Date(activity.occurredAt).toLocaleString()} · {readable(activity.type)}</small>
-              </li>
-            ))}
-          </ol>
-        )}
-      </Card>
-    </Page>
+          <section className="customer-section customer-conversation-preview">
+            <SectionHeader title="השיחה האחרונה" icon={<MessageCircleMore aria-hidden="true" />} />
+            {customer.messages.length === 0 ? (
+              <EmptyState title="עוד אין הודעות">אפשר לפתוח שיחה מהכפתור למעלה.</EmptyState>
+            ) : (
+              <div className="customer-message-preview">
+                {customer.messages.slice(-3).map((message) => (
+                  <article key={message.id} className={`customer-preview-message is-${message.side.toLowerCase()}`} dir="auto">
+                    <p>{message.body}</p>
+                    <time dateTime={message.sentAt}>{formatProductDateTime(message.sentAt, business?.timeZone)}</time>
+                  </article>
+                ))}
+                <Link to={`/inbox?conversation=${customer.conversationId}`}>לשיחה המלאה <ArrowLeft aria-hidden="true" /></Link>
+              </div>
+            )}
+          </section>
+
+          <section className="customer-section">
+            <SectionHeader title="מה כבר קרה" icon={<History aria-hidden="true" />} />
+            {customer.activity.length === 0 ? (
+              <EmptyState title="ההיסטוריה עדיין קצרה">אירועים חשובים יופיעו כאן לפי הסדר.</EmptyState>
+            ) : (
+              <ol className="product-timeline">
+                {[...customer.activity].reverse().map((activity) => (
+                  <li key={activity.id}>
+                    <span className="timeline-marker" aria-hidden="true" />
+                    <div>
+                      <strong>{activityLabel(activity.type)}</strong>
+                      <time dateTime={activity.occurredAt}>{formatProductDateTime(activity.occurredAt, business?.timeZone)}</time>
+                    </div>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </section>
+        </div>
+
+        <aside className="customer-side-column">
+          <section className={`payment-summary${(customer.remainingBalanceCents ?? 0) > 0 ? ' has-balance' : ''}`}>
+            <SectionHeader title="תשלום" icon={<Banknote aria-hidden="true" />} />
+            {customer.totalCents === null ? (
+              <EmptyState title="עדיין אין סכום מאושר">סכום יופיע אחרי קביעת תור או אישור הצעה.</EmptyState>
+            ) : (
+              <dl>
+                <div><dt>סה״כ</dt><dd><bdi>{formatProductMoney(customer.totalCents, currency)}</bdi></dd></div>
+                <div><dt>שולם</dt><dd><bdi>{formatProductMoney(customer.collectedCents, currency)}</bdi></dd></div>
+                <div className="payment-balance-row"><dt>נותר לתשלום</dt><dd><bdi>{formatProductMoney(customer.remainingBalanceCents ?? 0, currency)}</bdi></dd></div>
+              </dl>
+            )}
+            {customer.refundCents > 0 ? <p className="payment-note">כולל החזרים בסך {formatProductMoney(customer.refundCents, currency)}</p> : null}
+          </section>
+
+          <section className="customer-section facts-section">
+            <SectionHeader title="פרטים שימושיים" icon={<Info aria-hidden="true" />} />
+            {customer.facts.length === 0 ? (
+              <EmptyState title="עוד לא נאספו פרטים">פרטים שהלקוח/ה מסר/ה יופיעו כאן.</EmptyState>
+            ) : (
+              <dl className="facts-list">
+                {customer.facts.map((fact) => (
+                    <div key={fact.id}><dt>{factLabel(fact.key)}</dt><dd dir="auto">{factValue(fact.value)}</dd></div>
+                ))}
+              </dl>
+            )}
+          </section>
+
+          <section className="customer-section communication-section">
+            <SectionHeader title="תקשורת" icon={<MessageCircleMore aria-hidden="true" />} />
+            <div className="communication-status">
+              <span>הודעות תפעוליות</span><strong>{customer.operationalAllowed ? 'מותרות' : 'חסומות'}</strong>
+            </div>
+            <div className="communication-status">
+              <span>הודעות שיווקיות</span><strong>{customer.marketingAllowed ? 'מותרות' : 'חסומות'}</strong>
+            </div>
+            {customer.marketingAllowed ? (
+              <button
+                className="button button-quiet"
+                type="button"
+                onClick={() => run(() => service.optOutMarketing(businessId, contactId), 'הודעות שיווקיות נחסמו.')}
+              >
+                חסום הודעות שיווקיות
+              </button>
+            ) : null}
+          </section>
+        </aside>
+      </div>
+    </ProductPage>
+  );
+}
+
+function CurrentWork({
+  customer,
+  currency,
+  timeZone,
+}: {
+  customer: ProductCustomerView;
+  currency: string;
+  timeZone: string | undefined;
+}) {
+  if (customer.work.kind === 'APPOINTMENT' && customer.work.appointmentStatus) {
+    return (
+      <div className="work-summary">
+        <div className="work-summary-icon"><CalendarClock aria-hidden="true" /></div>
+        <div className="work-summary-copy">
+          <span>תור</span>
+          <strong>{appointmentStatusLabel(customer.work.appointmentStatus)}</strong>
+          {customer.work.appointmentStartAt ? <time dateTime={customer.work.appointmentStartAt}>{formatProductDateTime(customer.work.appointmentStartAt, timeZone)}</time> : null}
+        </div>
+        <Link className="button button-secondary" to="/appointments">פרטי התור</Link>
+      </div>
+    );
+  }
+  if (customer.work.kind === 'QUOTE_JOB') {
+    return (
+      <div className="work-summary">
+        <div className="work-summary-icon"><FileText aria-hidden="true" /></div>
+        <div className="work-summary-copy">
+          <span>{customer.work.jobStatus ? 'עבודה' : 'הצעת מחיר'}</span>
+          <strong>{customer.work.jobStatus ? jobStatusLabel(customer.work.jobStatus) : customer.work.quoteStatus ? quoteStatusLabel(customer.work.quoteStatus) : 'בתהליך'}</strong>
+          {customer.work.jobStartAt ? <time dateTime={customer.work.jobStartAt}>{formatProductDateTime(customer.work.jobStartAt, timeZone)}</time> : null}
+          {!customer.work.jobStartAt && customer.work.quoteTotalCents !== null ? <span><bdi>{formatProductMoney(customer.work.quoteTotalCents, currency)}</bdi></span> : null}
+        </div>
+        <Link className="button button-secondary" to="/quotes">פרטי העבודה</Link>
+      </div>
+    );
+  }
+  return (
+    <EmptyState title="עוד לא נקבעה עבודה">
+      כשהפרטים יהיו מוכנים, התור או הצעת המחיר יופיעו כאן.
+    </EmptyState>
   );
 }

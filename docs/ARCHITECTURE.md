@@ -6,15 +6,29 @@ The project is a strict TypeScript React/Vite application with these layers:
 - `application/CloserService.ts` — public use-case, validation, and mutation boundary
 - `application/commercial/` — derived journey reconciliation and idempotent activity timeline
 - `application/conversation/` — stage inference, deterministic decisions, decision policy, tool execution, memory, knowledge, and follow-ups
+- `application/presentation/` — tenant-scoped product read models and plain-Hebrew presentation copy
 - `repositories/` — tenant-scoped contracts and schema v3
 - `infrastructure/` — localStorage/in-memory adapters, validation, and v1/v2→v3 migration
 - `integrations/` — provider ports and deterministic mocks
 - `data/` — deterministic fictional multi-vertical seed
 - `state/` — React subscription adapter
-- `features/` and `components/` — internal engineering UI only
+- `components/product/` — production shell and shared presentation primitives
+- `features/actions`, `features/inbox`, and `features/customer` — the three production experiences
+- remaining `features/` and `components/` — preserved engineering/demo UI
 - `test/` — deterministic harness
 
 The dependency direction is UI → application → domain/repository/provider ports. Infrastructure implements ports. React does not access storage. `MockAIProvider` owns only `ConversationEngine`; it has no repositories, network, clock, or mutation access.
+
+## Product presentation path
+
+1. `ProductReadService` receives a `businessId` and reads only that tenant through repository interfaces.
+2. It combines validated conversation, commercial-journey, work, payment, consent, memory, and activity truth into purpose-built Today, Inbox, or Customer Workspace projections.
+3. `productCopy` maps enums and deterministic demo labels to concise Hebrew without changing domain state.
+4. Production React components render those projections and invoke existing validated `CloserService` use cases for sends, handoff/resume, consent, and reopening.
+
+The read service does not mutate repositories or calculate new financial truth. React does not infer stages, balances, action priority, or tenant ownership. Raw assistant decisions, tool names, reason codes, IDs, and operation keys remain in `/debug`, outside the production presentation boundary.
+
+Routing uses two explicit shells. `ProductLayout` owns the RTL production routes `/actions`, `/inbox`, and `/customer/:id`; the Phase 3 `Layout` remains around `/demo`, `/appointments`, `/quotes`, and `/debug`. This prevents engineering inspection needs from leaking into the customer-facing visual language.
 
 ## Conversation path
 

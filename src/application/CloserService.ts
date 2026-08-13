@@ -66,6 +66,12 @@ import { FollowUpService } from './conversation/FollowUpService';
 import { ActivityTimelineService } from './commercial/ActivityTimelineService';
 import { CommercialJourneyService } from './commercial/CommercialJourneyService';
 import type { ActionCenterItem, CommercialOpportunityView } from '../types/commercial';
+import {
+  ProductReadService,
+  type ProductCustomerView,
+  type ProductInboxView,
+  type ProductTodayView,
+} from './presentation/ProductReadService';
 
 export interface CreateAppointmentInput {
   businessId: string;
@@ -117,6 +123,7 @@ export class CloserService {
   private readonly followUpService: FollowUpService;
   private readonly timelineService: ActivityTimelineService;
   private readonly commercialJourney: CommercialJourneyService;
+  private readonly productReads: ProductReadService;
 
   constructor(
     private readonly database: DatabasePort,
@@ -129,6 +136,7 @@ export class CloserService {
     this.followUpService = new FollowUpService(database, now, id);
     this.timelineService = new ActivityTimelineService(database, now, id);
     this.commercialJourney = new CommercialJourneyService(database);
+    this.productReads = new ProductReadService(database, this.commercialJourney, now);
   }
 
   snapshot(): DatabaseSchema {
@@ -158,43 +166,19 @@ export class CloserService {
   }
 
   actionCenter(businessId: string): ActionCenterItem[] {
-    const repositories = this.database.repositories;
-    return repositories.leads
-      .list(businessId)
-      .filter((lead) => ![LeadStatus.Won, LeadStatus.Lost, LeadStatus.Archived].includes(lead.status))
-      .map((lead) => {
-        const action = lead.nextActionId
-          ? repositories.nextActions.get(businessId, lead.nextActionId)
-          : null;
-        const contact = required(repositories.contacts.get(businessId, lead.contactId), 'Contact not found');
-        const opportunity = this.opportunity(businessId, lead.id);
-        return action && action.status === NextActionStatus.Pending
-          ? {
-              id: action.id,
-              businessId,
-              leadId: lead.id,
-              contactId: lead.contactId,
-              conversationId: lead.conversationId,
-              customerName: contact.displayName,
-              actionType: action.type,
-              reason: action.reason,
-              amountCents:
-                action.type === NextActionType.CollectBalance
-                  ? opportunity.remainingBalanceCents
-                  : action.type === NextActionType.RequestDeposit
-                    ? this.depositOutstanding(opportunity)
-                    : action.type === NextActionType.FollowUpQuote
-                      ? opportunity.totalCents
-                      : null,
-              dueAt: action.dueAt,
-              createdAt: action.createdAt,
-            }
-          : null;
-      })
-      .filter((item): item is ActionCenterItem => item !== null)
-      .sort((first, second) =>
-        (first.dueAt ?? first.createdAt).localeCompare(second.dueAt ?? second.createdAt),
-      );
+    return this.productReads.actionCenter(businessId);
+  }
+
+  productToday(businessId: string): ProductTodayView {
+    return this.productReads.today(businessId);
+  }
+
+  productInbox(businessId: string): ProductInboxView {
+    return this.productReads.inbox(businessId);
+  }
+
+  productCustomer(businessId: string, contactId: string): ProductCustomerView | null {
+    return this.productReads.customer(businessId, contactId);
   }
 
   activityTimeline(businessId: string, contactId: string) {
@@ -2013,18 +1997,6 @@ export class CloserService {
       return required(repositories.quotes.get(businessId, referenceId), 'Quote not found').leadId;
     }
     return required(repositories.jobs.get(businessId, referenceId), 'Job not found').leadId;
-  }
-
-  private depositOutstanding(opportunity: CommercialOpportunityView): number | null {
-    const repositories = this.database.repositories;
-    const requiredCents = opportunity.jobId
-      ? repositories.jobs.get(opportunity.businessId, opportunity.jobId)?.depositRequiredCents
-      : opportunity.appointmentId
-        ? repositories.appointments.get(opportunity.businessId, opportunity.appointmentId)?.depositRequiredCents
-        : null;
-    return requiredCents === null || requiredCents === undefined
-      ? null
-      : Math.max(0, requiredCents - opportunity.collectedCents);
   }
 
   private clearPendingActions(businessId: string, lead: Lead): void {
