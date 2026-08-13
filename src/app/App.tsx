@@ -6,6 +6,7 @@ import { DebugPage } from '../features/debug/DebugPage';
 import { DemoPage } from '../features/demo/DemoPage';
 import { InboxPage } from '../features/inbox/InboxPage';
 import { QuotesPage } from '../features/quotes/QuotesPage';
+import { ActionsPage } from '../features/actions/ActionsPage';
 
 export function App() {
   return (
@@ -14,6 +15,7 @@ export function App() {
         <Route index element={<Navigate to="/demo" replace />} />
         <Route path="demo" element={<DemoPage />} />
         <Route path="inbox" element={<InboxPage />} />
+        <Route path="actions" element={<ActionsPage />} />
         <Route path="customer/:id" element={<CustomerPage />} />
         <Route path="appointments" element={<AppointmentsPage />} />
         <Route path="quotes" element={<QuotesPage />} />

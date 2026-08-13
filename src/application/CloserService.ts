@@ -16,13 +16,13 @@ import {
   MemorySource,
   NextActionStatus,
   NextActionType,
+  OpportunityLostReason,
   PaymentKind,
   PaymentReferenceType,
   PaymentStatus,
   QuoteStatus,
   RevenueStage,
   WorkflowType,
-  type Activity,
   type Appointment,
   type ConsentRecord,
   type Contact,
@@ -63,6 +63,9 @@ import { AssistantDecisionPolicy } from './conversation/AssistantDecisionPolicy'
 import { ConversationStageService } from './conversation/ConversationStageService';
 import { CustomerMemoryService } from './conversation/CustomerMemoryService';
 import { FollowUpService } from './conversation/FollowUpService';
+import { ActivityTimelineService } from './commercial/ActivityTimelineService';
+import { CommercialJourneyService } from './commercial/CommercialJourneyService';
+import type { ActionCenterItem, CommercialOpportunityView } from '../types/commercial';
 
 export interface CreateAppointmentInput {
   businessId: string;
@@ -72,6 +75,7 @@ export interface CreateAppointmentInput {
   staffId: string;
   startAt: string;
   totalCents?: number;
+  operationKey?: string;
 }
 
 export interface CreateQuoteInput {
@@ -81,6 +85,7 @@ export interface CreateQuoteInput {
   items: QuoteItem[];
   discountCents?: number;
   depositBasisPoints?: number;
+  operationKey?: string;
 }
 
 export interface RecordPaymentInput {
@@ -110,6 +115,8 @@ export class CloserService {
   private readonly toolExecutor = new AssistantToolExecutor();
   private readonly decisionPolicy = new AssistantDecisionPolicy();
   private readonly followUpService: FollowUpService;
+  private readonly timelineService: ActivityTimelineService;
+  private readonly commercialJourney: CommercialJourneyService;
 
   constructor(
     private readonly database: DatabasePort,
@@ -120,6 +127,8 @@ export class CloserService {
   ) {
     this.memoryService = new CustomerMemoryService(database, now, id);
     this.followUpService = new FollowUpService(database, now, id);
+    this.timelineService = new ActivityTimelineService(database, now, id);
+    this.commercialJourney = new CommercialJourneyService(database);
   }
 
   snapshot(): DatabaseSchema {
@@ -142,6 +151,206 @@ export class CloserService {
     const repositories = this.database.repositories;
     const actions = repositories.nextActions.list(businessId);
     repositories.leads.list(businessId).forEach((lead) => assertNextActionInvariant(lead, actions));
+  }
+
+  opportunity(businessId: string, leadId: string): CommercialOpportunityView {
+    return this.commercialJourney.evaluate(businessId, leadId).opportunity;
+  }
+
+  actionCenter(businessId: string): ActionCenterItem[] {
+    const repositories = this.database.repositories;
+    return repositories.leads
+      .list(businessId)
+      .filter((lead) => ![LeadStatus.Won, LeadStatus.Lost, LeadStatus.Archived].includes(lead.status))
+      .map((lead) => {
+        const action = lead.nextActionId
+          ? repositories.nextActions.get(businessId, lead.nextActionId)
+          : null;
+        const contact = required(repositories.contacts.get(businessId, lead.contactId), 'Contact not found');
+        const opportunity = this.opportunity(businessId, lead.id);
+        return action && action.status === NextActionStatus.Pending
+          ? {
+              id: action.id,
+              businessId,
+              leadId: lead.id,
+              contactId: lead.contactId,
+              conversationId: lead.conversationId,
+              customerName: contact.displayName,
+              actionType: action.type,
+              reason: action.reason,
+              amountCents:
+                action.type === NextActionType.CollectBalance
+                  ? opportunity.remainingBalanceCents
+                  : action.type === NextActionType.RequestDeposit
+                    ? this.depositOutstanding(opportunity)
+                    : action.type === NextActionType.FollowUpQuote
+                      ? opportunity.totalCents
+                      : null,
+              dueAt: action.dueAt,
+              createdAt: action.createdAt,
+            }
+          : null;
+      })
+      .filter((item): item is ActionCenterItem => item !== null)
+      .sort((first, second) =>
+        (first.dueAt ?? first.createdAt).localeCompare(second.dueAt ?? second.createdAt),
+      );
+  }
+
+  activityTimeline(businessId: string, contactId: string) {
+    required(this.database.repositories.contacts.get(businessId, contactId), 'Contact not found');
+    return this.timelineService.list(businessId, contactId);
+  }
+
+  reconcileOpportunity(businessId: string, leadId: string): CommercialOpportunityView {
+    const repositories = this.database.repositories;
+    const result = this.commercialJourney.evaluate(businessId, leadId);
+    const lead = required(repositories.leads.get(businessId, leadId), 'Lead not found');
+    const conversation = required(
+      repositories.conversations.get(businessId, lead.conversationId),
+      'Conversation not found',
+    );
+    if (result.shouldRemainClosedLost) {
+      this.followUpService.cancelPending(businessId, lead.conversationId);
+      this.clearPendingActions(businessId, lead);
+      return this.commercialJourney.evaluate(businessId, leadId).opportunity;
+    }
+    if (result.shouldCloseWon) {
+      this.closeWon(businessId, lead, conversation);
+      return this.commercialJourney.evaluate(businessId, leadId).opportunity;
+    }
+    const reopensAfterRefund =
+      lead.status === LeadStatus.Won &&
+      result.opportunity.stage === ConversationStage.AwaitingBalance;
+    repositories.leads.save(businessId, {
+      ...lead,
+      updatedAt: this.now(),
+      status:
+        lead.status === LeadStatus.New || reopensAfterRefund
+          ? LeadStatus.Active
+          : lead.status,
+      closedAt: reopensAfterRefund ? null : lead.closedAt,
+    });
+    repositories.conversations.save(businessId, {
+      ...conversation,
+      updatedAt: this.now(),
+      inferredStage: result.opportunity.stage,
+      state: conversationStateForStage(result.opportunity.stage),
+      mode: reopensAfterRefund ? ConversationMode.AiActive : conversation.mode,
+      automationEnabled: reopensAfterRefund ? true : conversation.automationEnabled,
+    });
+    if (reopensAfterRefund) {
+      this.activity(businessId, lead.contactId, lead.conversationId, ActivityType.OpportunityReopened, 'Refund created an outstanding balance; opportunity reopened.', {}, `${lead.id}:reopen:refund:${result.opportunity.remainingBalanceCents}`);
+      this.tryScheduleFollowUp(
+        businessId,
+        lead.conversationId,
+        ConversationStage.AwaitingBalance,
+        addHours(this.now(), 24),
+      );
+    }
+    if (result.action) {
+      this.replaceNextAction(
+        businessId,
+        lead.conversationId,
+        result.action.type,
+        result.action.reason,
+        result.action.automatic,
+        result.action.dueAt,
+      );
+    }
+    return this.commercialJourney.evaluate(businessId, leadId).opportunity;
+  }
+
+  closeOpportunityLost(
+    businessId: string,
+    leadId: string,
+    reason: OpportunityLostReason,
+    operationKey = `${leadId}:lost:${reason}`,
+  ): Lead {
+    const repositories = this.database.repositories;
+    const lead = required(repositories.leads.get(businessId, leadId), 'Lead not found');
+    if (lead.status === LeadStatus.Lost) {
+      if (lead.lostReason !== reason) {
+        throw new DomainError('Opportunity is already closed for another reason', 'IDEMPOTENCY_CONFLICT');
+      }
+      return lead;
+    }
+    if (lead.status === LeadStatus.Won) {
+      throw new DomainError('A won opportunity cannot be closed lost', 'INVALID_LEAD_STATE');
+    }
+    this.clearPendingActions(businessId, lead);
+    this.followUpService.cancelPending(businessId, lead.conversationId);
+    const closed = repositories.leads.save(businessId, {
+      ...lead,
+      updatedAt: this.now(),
+      status: LeadStatus.Lost,
+      lostReason: reason,
+      nextActionId: null,
+      closedAt: this.now(),
+    });
+    const conversation = required(
+      repositories.conversations.get(businessId, lead.conversationId),
+      'Conversation not found',
+    );
+    repositories.conversations.save(businessId, {
+      ...conversation,
+      updatedAt: this.now(),
+      state: ConversationState.Complete,
+      inferredStage: ConversationStage.ClosedLost,
+      mode: ConversationMode.Closed,
+      automationEnabled: false,
+      nextActionId: null,
+    });
+    this.activity(
+      businessId,
+      lead.contactId,
+      lead.conversationId,
+      ActivityType.OpportunityLost,
+      `Opportunity closed: ${reason.toLowerCase().replaceAll('_', ' ')}.`,
+      {},
+      operationKey,
+    );
+    return closed;
+  }
+
+  reopenOpportunity(
+    businessId: string,
+    leadId: string,
+    operationKey = `${leadId}:reopen`,
+  ): Lead {
+    const repositories = this.database.repositories;
+    const lead = required(repositories.leads.get(businessId, leadId), 'Lead not found');
+    if (lead.status !== LeadStatus.Lost) return lead;
+    const conversation = required(
+      repositories.conversations.get(businessId, lead.conversationId),
+      'Conversation not found',
+    );
+    repositories.leads.save(businessId, {
+      ...lead,
+      updatedAt: this.now(),
+      status: LeadStatus.Active,
+      lostReason: null,
+      closedAt: null,
+    });
+    repositories.conversations.save(businessId, {
+      ...conversation,
+      updatedAt: this.now(),
+      state: ConversationState.Qualifying,
+      inferredStage: ConversationStage.Discovery,
+      mode: ConversationMode.AiActive,
+      automationEnabled: true,
+    });
+    this.activity(
+      businessId,
+      lead.contactId,
+      lead.conversationId,
+      ActivityType.OpportunityReopened,
+      'Customer returned; opportunity reopened.',
+      {},
+      operationKey,
+    );
+    this.reconcileOpportunity(businessId, leadId);
+    return required(repositories.leads.get(businessId, leadId), 'Lead not found');
   }
 
   async receiveCustomerMessage(
@@ -391,6 +600,7 @@ export class CloserService {
       serviceId: null,
       nextActionId: null,
       closedAt: null,
+      lostReason: null,
     };
     repositories.leads.save(input.businessId, lead);
     this.replaceNextAction(
@@ -424,6 +634,9 @@ export class CloserService {
     const repositories = this.database.repositories;
     const lead = required(repositories.leads.get(businessId, leadId), 'Lead not found');
     const service = required(repositories.services.get(businessId, serviceId), 'Service not found');
+    if (lead.workflowType !== service.workflowType) {
+      throw new DomainError('Service does not match this commercial journey', 'WORKFLOW_MISMATCH');
+    }
     this.memoryService.remember(
       businessId,
       lead.contactId,
@@ -434,11 +647,13 @@ export class CloserService {
       service.id,
       MemorySource.Manual,
     );
-    return repositories.leads.save(businessId, {
+    const selected = repositories.leads.save(businessId, {
       ...lead,
       updatedAt: this.now(),
       serviceId: service.id,
     });
+    this.reconcileOpportunity(businessId, lead.id);
+    return selected;
   }
 
   rememberCustomerFact(
@@ -447,13 +662,19 @@ export class CloserService {
     key: CustomerFactKey,
     value: CustomerFactValue,
   ) {
-    return this.memoryService.remember(
+    const fact = this.memoryService.remember(
       businessId,
       contactId,
       key,
       value,
       MemorySource.Manual,
     );
+    const activeLead = this.database.repositories.leads.find(
+      businessId,
+      (lead) => lead.contactId === contactId && ![LeadStatus.Won, LeadStatus.Lost, LeadStatus.Archived].includes(lead.status),
+    )[0];
+    if (activeLead) this.reconcileOpportunity(businessId, activeLead.id);
+    return fact;
   }
 
   scheduleFollowUpForConversation(
@@ -693,6 +914,11 @@ export class CloserService {
       true,
     );
     this.activity(businessId, conversation.contactId, conversationId, ActivityType.AssistantResumed, 'Assistant mode explicitly resumed.');
+    const lead = required(
+      repositories.leads.find(businessId, (candidate) => candidate.conversationId === conversationId)[0] ?? null,
+      'Lead not found',
+    );
+    this.reconcileOpportunity(businessId, lead.id);
     return required(repositories.conversations.get(businessId, conversationId), 'Conversation not found');
   }
 
@@ -760,6 +986,7 @@ export class CloserService {
         service.durationMinutes,
         service.fixedPriceCents ?? 0,
         0,
+        `slot:${staffId}:${cursor.toISOString()}`,
       );
       try {
         assertNoDoubleBooking(candidate, existing);
@@ -776,8 +1003,18 @@ export class CloserService {
     const repositories = this.database.repositories;
     const contact = required(repositories.contacts.get(input.businessId, input.contactId), 'Contact not found');
     const lead = required(repositories.leads.get(input.businessId, input.leadId), 'Lead not found');
+    this.assertOpenLead(lead);
+    if (lead.workflowType !== WorkflowType.AppointmentService) {
+      throw new DomainError('This opportunity does not use appointments', 'WORKFLOW_MISMATCH');
+    }
     if (lead.contactId !== contact.id) throw new DomainError('Lead and contact do not match', 'CONTACT_MISMATCH');
     const service = required(repositories.services.get(input.businessId, input.serviceId), 'Service not found');
+    if (service.workflowType !== WorkflowType.AppointmentService) {
+      throw new DomainError('This service does not use appointments', 'WORKFLOW_MISMATCH');
+    }
+    if (lead.serviceId && lead.serviceId !== service.id) {
+      throw new DomainError('Appointment service does not match the opportunity', 'SERVICE_MISMATCH');
+    }
     required(repositories.teamMembers.get(input.businessId, input.staffId), 'Staff member not found');
     const totalCents = input.totalCents ?? service.fixedPriceCents;
     if (totalCents === null) throw new DomainError('Appointment total must be validated', 'TOTAL_REQUIRED');
@@ -796,8 +1033,32 @@ export class CloserService {
       service.durationMinutes,
       totalCents,
       deposit,
+      input.operationKey ?? `${input.leadId}:appointment:${new Date(input.startAt).toISOString()}`,
     );
+    const existing = repositories.appointments.find(
+      input.businessId,
+      (candidate) => candidate.operationKey === appointment.operationKey,
+    )[0];
+    if (existing) {
+      if (
+        existing.contactId !== input.contactId ||
+        existing.leadId !== input.leadId ||
+        existing.serviceId !== input.serviceId ||
+        existing.staffId !== input.staffId ||
+        existing.startAt !== appointment.startAt ||
+        existing.totalCents !== appointment.totalCents
+      ) {
+        throw new DomainError('Appointment operation key was reused', 'IDEMPOTENCY_CONFLICT');
+      }
+      return existing;
+    }
     assertNoDoubleBooking(appointment, repositories.appointments.list(input.businessId));
+    this.assertNoJobConflict(
+      input.businessId,
+      input.staffId,
+      appointment.startAt,
+      appointment.endAt,
+    );
     repositories.appointments.save(input.businessId, appointment);
     this.recordRevenueEvent({
       businessId: input.businessId,
@@ -809,13 +1070,6 @@ export class CloserService {
       causationId: `${appointment.id}:booked`,
       correlationId: appointment.id,
     });
-    this.replaceNextAction(
-      input.businessId,
-      lead.conversationId,
-      deposit > 0 ? NextActionType.RequestDeposit : NextActionType.ConfirmAppointment,
-      deposit > 0 ? 'Collect the validated deposit.' : 'Confirm the appointment.',
-      false,
-    );
     this.tryScheduleFollowUp(
       input.businessId,
       lead.conversationId,
@@ -824,7 +1078,8 @@ export class CloserService {
         : ConversationStage.AwaitingConfirmation,
       addHours(this.now(), deposit > 0 ? 48 : 24),
     );
-    this.activity(input.businessId, input.contactId, lead.conversationId, ActivityType.AppointmentChanged, 'Appointment created.');
+    this.activity(input.businessId, input.contactId, lead.conversationId, ActivityType.AppointmentCreated, 'Appointment created.', { appointmentId: appointment.id }, `${appointment.operationKey}:created`);
+    this.reconcileOpportunity(input.businessId, lead.id);
     return appointment;
   }
 
@@ -842,7 +1097,11 @@ export class CloserService {
       endAt: new Date(new Date(startAt).getTime() + duration).toISOString(),
     };
     assertNoDoubleBooking(next, repositories.appointments.list(businessId));
-    return repositories.appointments.save(businessId, next);
+    const saved = repositories.appointments.save(businessId, next);
+    const lead = required(repositories.leads.get(businessId, appointment.leadId), 'Lead not found');
+    this.activity(businessId, appointment.contactId, lead.conversationId, ActivityType.AppointmentRescheduled, 'Appointment rescheduled.', { appointmentId, startAt: saved.startAt }, `${appointmentId}:rescheduled:${saved.startAt}`);
+    this.reconcileOpportunity(businessId, appointment.leadId);
+    return saved;
   }
 
   cancelAppointment(businessId: string, appointmentId: string): Appointment {
@@ -851,16 +1110,24 @@ export class CloserService {
     if (appointment.status === AppointmentStatus.Completed) {
       throw new DomainError('Completed appointments cannot be cancelled', 'INVALID_APPOINTMENT_STATE');
     }
-    return repositories.appointments.save(businessId, {
+    const cancelled = repositories.appointments.save(businessId, {
       ...appointment,
       updatedAt: this.now(),
       status: AppointmentStatus.Cancelled,
     });
+    const lead = required(repositories.leads.get(businessId, appointment.leadId), 'Lead not found');
+    this.activity(businessId, appointment.contactId, lead.conversationId, ActivityType.AppointmentCancelled, 'Appointment cancelled.', { appointmentId }, `${appointmentId}:cancelled`);
+    this.closeOpportunityLost(businessId, appointment.leadId, OpportunityLostReason.Cancelled, `${appointmentId}:lost`);
+    return cancelled;
   }
 
   confirmAppointment(businessId: string, appointmentId: string): Appointment {
     const repositories = this.database.repositories;
     const appointment = required(repositories.appointments.get(businessId, appointmentId), 'Appointment not found');
+    if (appointment.status === AppointmentStatus.Confirmed) return appointment;
+    if (appointment.status !== AppointmentStatus.Tentative) {
+      throw new DomainError('This appointment cannot be confirmed', 'INVALID_APPOINTMENT_STATE');
+    }
     const collected = appointment.totalCents - this.balance(
       businessId,
       PaymentReferenceType.Appointment,
@@ -869,17 +1136,22 @@ export class CloserService {
     if (collected < appointment.depositRequiredCents) {
       throw new DomainError('Required deposit has not been collected', 'DEPOSIT_REQUIRED');
     }
-    return repositories.appointments.save(businessId, {
+    const confirmed = repositories.appointments.save(businessId, {
       ...appointment,
       updatedAt: this.now(),
       status: AppointmentStatus.Confirmed,
       confirmedAt: this.now(),
     });
+    const lead = required(repositories.leads.get(businessId, appointment.leadId), 'Lead not found');
+    this.activity(businessId, appointment.contactId, lead.conversationId, ActivityType.AppointmentConfirmed, 'Appointment confirmed.', { appointmentId }, `${appointmentId}:confirmed`);
+    this.reconcileOpportunity(businessId, appointment.leadId);
+    return confirmed;
   }
 
   completeAppointment(businessId: string, appointmentId: string): Appointment {
     const repositories = this.database.repositories;
     const appointment = required(repositories.appointments.get(businessId, appointmentId), 'Appointment not found');
+    if (appointment.status === AppointmentStatus.Completed) return appointment;
     if (appointment.status === AppointmentStatus.Cancelled) {
       throw new DomainError('Cancelled appointments cannot be completed', 'INVALID_APPOINTMENT_STATE');
     }
@@ -899,6 +1171,8 @@ export class CloserService {
       causationId: `${appointment.id}:completed`,
       correlationId: appointment.id,
     });
+    const lead = required(repositories.leads.get(businessId, appointment.leadId), 'Lead not found');
+    this.activity(businessId, appointment.contactId, lead.conversationId, ActivityType.AppointmentCompleted, 'Appointment completed.', { appointmentId }, `${appointmentId}:completed:activity`);
     if (!this.closeIfSettled(businessId, appointment.leadId, PaymentReferenceType.Appointment, appointment.id)) {
       const lead = required(repositories.leads.get(businessId, appointment.leadId), 'Lead not found');
       this.replaceNextAction(businessId, lead.conversationId, NextActionType.CollectBalance, 'Service is complete; collect the remaining balance.', false);
@@ -910,6 +1184,7 @@ export class CloserService {
         addHours(this.now(), 24),
       );
     }
+    this.reconcileOpportunity(businessId, appointment.leadId);
     return completed;
   }
 
@@ -917,6 +1192,10 @@ export class CloserService {
     const repositories = this.database.repositories;
     const contact = required(repositories.contacts.get(input.businessId, input.contactId), 'Contact not found');
     const lead = required(repositories.leads.get(input.businessId, input.leadId), 'Lead not found');
+    this.assertOpenLead(lead);
+    if (lead.workflowType !== WorkflowType.QuoteJob) {
+      throw new DomainError('This opportunity does not use quotes', 'WORKFLOW_MISMATCH');
+    }
     if (lead.contactId !== contact.id) throw new DomainError('Lead and contact do not match', 'CONTACT_MISMATCH');
     const settings = required(repositories.businessSettings.list(input.businessId)[0] ?? null, 'Settings not found');
     const totals = calculateQuoteTotals(
@@ -925,6 +1204,21 @@ export class CloserService {
       settings.taxEnabled ? settings.taxRateBasisPoints : 0,
     );
     const depositBasisPoints = input.depositBasisPoints ?? settings.defaultDepositBasisPoints;
+    const operationKey = input.operationKey ?? `${input.leadId}:quote:${input.items.map((item) => `${item.description}:${item.quantity}:${item.unitPriceCents}`).join('|')}`;
+    const existing = repositories.quotes.find(
+      input.businessId,
+      (candidate) => candidate.operationKey === operationKey,
+    )[0];
+    if (existing) {
+      if (
+        existing.contactId !== input.contactId ||
+        existing.leadId !== input.leadId ||
+        existing.totalCents !== totals.totalCents
+      ) {
+        throw new DomainError('Quote operation key was reused', 'IDEMPOTENCY_CONFLICT');
+      }
+      return existing;
+    }
     const quote: Quote = {
       ...this.entityBase(input.businessId),
       contactId: input.contactId,
@@ -935,16 +1229,18 @@ export class CloserService {
       status: QuoteStatus.Draft,
       expiresAt: null,
       acceptedAt: null,
+      operationKey,
     };
     repositories.quotes.save(input.businessId, quote);
-    this.setConversationState(input.businessId, lead.conversationId, ConversationState.QuoteInProgress);
-    this.replaceNextAction(input.businessId, lead.conversationId, NextActionType.FollowUpQuote, 'Review and send the quote draft.', false);
+    this.activity(input.businessId, input.contactId, lead.conversationId, ActivityType.QuoteCreated, 'Quote draft created.', { quoteId: quote.id, totalCents: quote.totalCents }, `${operationKey}:created`);
+    this.reconcileOpportunity(input.businessId, lead.id);
     return quote;
   }
 
   sendQuote(businessId: string, quoteId: string): Quote {
     const repositories = this.database.repositories;
     const quote = required(repositories.quotes.get(businessId, quoteId), 'Quote not found');
+    if (quote.status === QuoteStatus.Sent) return quote;
     if (quote.status !== QuoteStatus.Draft && quote.status !== QuoteStatus.ChangeRequested) {
       throw new DomainError('Only a draft or changed quote can be sent', 'INVALID_QUOTE_STATE');
     }
@@ -962,7 +1258,53 @@ export class CloserService {
       ConversationStage.QuoteSent,
       addHours(this.now(), 72),
     );
+    this.activity(businessId, quote.contactId, lead.conversationId, ActivityType.QuoteSent, 'Quote sent.', { quoteId, totalCents: quote.totalCents }, `${quoteId}:sent`);
+    this.reconcileOpportunity(businessId, quote.leadId);
     return sent;
+  }
+
+  declineQuote(
+    businessId: string,
+    quoteId: string,
+    operationKey = `${quoteId}:declined`,
+  ): Quote {
+    const repositories = this.database.repositories;
+    const quote = required(repositories.quotes.get(businessId, quoteId), 'Quote not found');
+    if (quote.status === QuoteStatus.Rejected) return quote;
+    if (quote.status === QuoteStatus.Accepted) {
+      throw new DomainError('An accepted quote cannot be declined', 'INVALID_QUOTE_STATE');
+    }
+    const rejected = repositories.quotes.save(businessId, {
+      ...quote,
+      updatedAt: this.now(),
+      status: QuoteStatus.Rejected,
+    });
+    const lead = required(repositories.leads.get(businessId, quote.leadId), 'Lead not found');
+    this.activity(businessId, quote.contactId, lead.conversationId, ActivityType.QuoteDeclined, 'Customer declined the quote.', { quoteId }, operationKey);
+    this.closeOpportunityLost(businessId, quote.leadId, OpportunityLostReason.CustomerDeclined, `${operationKey}:lost`);
+    return rejected;
+  }
+
+  expireQuote(
+    businessId: string,
+    quoteId: string,
+    operationKey = `${quoteId}:expired`,
+  ): Quote {
+    const repositories = this.database.repositories;
+    const quote = required(repositories.quotes.get(businessId, quoteId), 'Quote not found');
+    if (quote.status === QuoteStatus.Expired) return quote;
+    if (quote.status === QuoteStatus.Accepted) {
+      throw new DomainError('An accepted quote cannot expire', 'INVALID_QUOTE_STATE');
+    }
+    const expired = repositories.quotes.save(businessId, {
+      ...quote,
+      updatedAt: this.now(),
+      status: QuoteStatus.Expired,
+    });
+    const lead = required(repositories.leads.get(businessId, quote.leadId), 'Lead not found');
+    this.activity(businessId, quote.contactId, lead.conversationId, ActivityType.QuoteExpired, 'Quote expired.', { quoteId }, operationKey);
+    this.closeOpportunityLost(businessId, quote.leadId, OpportunityLostReason.QuoteExpired, `${operationKey}:lost`);
+    return expired;
   }
 
   acceptQuote(businessId: string, quoteId: string): Job {
@@ -973,6 +1315,11 @@ export class CloserService {
     if (!canAcceptQuote(quote.status)) {
       throw new DomainError('Quote is not in an acceptable state', 'INVALID_QUOTE_STATE');
     }
+    const lead = required(repositories.leads.get(businessId, quote.leadId), 'Lead not found');
+    this.assertOpenLead(lead);
+    if (lead.contactId !== quote.contactId || lead.workflowType !== WorkflowType.QuoteJob) {
+      throw new DomainError('Quote does not match its opportunity', 'REFERENCE_MISMATCH');
+    }
     repositories.quotes.save(businessId, {
       ...quote,
       updatedAt: this.now(),
@@ -980,12 +1327,16 @@ export class CloserService {
       acceptedAt: this.now(),
     });
     const contact = required(repositories.contacts.get(businessId, quote.contactId), 'Contact not found');
+    const rememberedAddress = repositories.customerMemory.find(
+      businessId,
+      (fact) => fact.contactId === quote.contactId && fact.key === CustomerFactKey.Address,
+    )[0]?.value;
     const job: Job = {
       ...this.entityBase(businessId),
       contactId: quote.contactId,
       leadId: quote.leadId,
       quoteId: quote.id,
-      address: contact.address,
+      address: contact.address ?? (typeof rememberedAddress === 'string' ? rememberedAddress : null),
       scheduledStartAt: null,
       scheduledEndAt: null,
       assignedStaffId: null,
@@ -993,6 +1344,7 @@ export class CloserService {
       totalCents: quote.totalCents,
       depositRequiredCents: quote.depositRequiredCents,
       completedAt: null,
+      operationKey: `${quote.id}:job`,
     };
     repositories.jobs.save(businessId, job);
     this.recordRevenueEvent({
@@ -1005,7 +1357,6 @@ export class CloserService {
       causationId: `${quote.id}:accepted`,
       correlationId: job.id,
     });
-    const lead = required(repositories.leads.get(businessId, quote.leadId), 'Lead not found');
     this.replaceNextAction(
       businessId,
       lead.conversationId,
@@ -1021,6 +1372,9 @@ export class CloserService {
         addHours(this.now(), 48),
       );
     }
+    this.activity(businessId, quote.contactId, lead.conversationId, ActivityType.QuoteAccepted, 'Quote accepted.', { quoteId }, `${quoteId}:accepted:activity`);
+    this.activity(businessId, quote.contactId, lead.conversationId, ActivityType.JobCreated, 'Job created from accepted quote.', { quoteId, jobId: job.id }, `${job.operationKey}:created`);
+    this.reconcileOpportunity(businessId, quote.leadId);
     return job;
   }
 
@@ -1034,26 +1388,101 @@ export class CloserService {
     const repositories = this.database.repositories;
     const job = required(repositories.jobs.get(businessId, jobId), 'Job not found');
     required(repositories.teamMembers.get(businessId, staffId), 'Staff member not found');
+    if (job.status === JobStatus.Scheduled) {
+      const normalizedStart = new Date(startAt).toISOString();
+      const normalizedEnd = new Date(endAt).toISOString();
+      if (
+        job.assignedStaffId === staffId &&
+        job.scheduledStartAt === normalizedStart &&
+        job.scheduledEndAt === normalizedEnd
+      ) return job;
+      throw new DomainError('A scheduled job must be rescheduled explicitly', 'INVALID_JOB_STATE');
+    }
+    if (job.status !== JobStatus.ReadyToSchedule) {
+      throw new DomainError('This job is not ready to schedule', 'INVALID_JOB_STATE');
+    }
     if (this.balance(businessId, PaymentReferenceType.Job, job.id) > job.totalCents - job.depositRequiredCents) {
       throw new DomainError('Required deposit has not been collected', 'DEPOSIT_REQUIRED');
     }
+    const { normalizedStart, normalizedEnd } = this.validateJobSchedule(
+      businessId,
+      job.id,
+      staffId,
+      startAt,
+      endAt,
+    );
     const scheduled = repositories.jobs.save(businessId, {
       ...job,
       updatedAt: this.now(),
       assignedStaffId: staffId,
-      scheduledStartAt: new Date(startAt).toISOString(),
-      scheduledEndAt: new Date(endAt).toISOString(),
+      scheduledStartAt: normalizedStart,
+      scheduledEndAt: normalizedEnd,
       status: JobStatus.Scheduled,
     });
     const lead = required(repositories.leads.get(businessId, job.leadId), 'Lead not found');
-    this.setConversationState(businessId, lead.conversationId, ConversationState.JobScheduled);
+    this.activity(businessId, job.contactId, lead.conversationId, ActivityType.JobScheduled, 'Job scheduled.', { jobId, startAt: scheduled.scheduledStartAt }, `${jobId}:scheduled:${scheduled.scheduledStartAt}`);
+    this.reconcileOpportunity(businessId, job.leadId);
     return scheduled;
+  }
+
+  rescheduleJob(
+    businessId: string,
+    jobId: string,
+    startAt: string,
+    endAt: string,
+  ): Job {
+    const repositories = this.database.repositories;
+    const job = required(repositories.jobs.get(businessId, jobId), 'Job not found');
+    if (![JobStatus.Scheduled, JobStatus.ReadyToSchedule].includes(job.status)) {
+      throw new DomainError('This job cannot be rescheduled', 'INVALID_JOB_STATE');
+    }
+    const staffId = required(job.assignedStaffId, 'Assigned staff member is required');
+    const { normalizedStart, normalizedEnd } = this.validateJobSchedule(
+      businessId,
+      job.id,
+      staffId,
+      startAt,
+      endAt,
+    );
+    const saved = repositories.jobs.save(businessId, {
+      ...job,
+      updatedAt: this.now(),
+      scheduledStartAt: normalizedStart,
+      scheduledEndAt: normalizedEnd,
+      status: JobStatus.Scheduled,
+    });
+    const lead = required(repositories.leads.get(businessId, job.leadId), 'Lead not found');
+    this.activity(businessId, job.contactId, lead.conversationId, ActivityType.JobRescheduled, 'Job rescheduled.', { jobId, startAt: saved.scheduledStartAt }, `${jobId}:rescheduled:${saved.scheduledStartAt}`);
+    this.reconcileOpportunity(businessId, job.leadId);
+    return saved;
+  }
+
+  cancelJob(businessId: string, jobId: string): Job {
+    const repositories = this.database.repositories;
+    const job = required(repositories.jobs.get(businessId, jobId), 'Job not found');
+    if (job.status === JobStatus.Completed) {
+      throw new DomainError('Completed jobs cannot be cancelled', 'INVALID_JOB_STATE');
+    }
+    if (job.status === JobStatus.Cancelled) return job;
+    const cancelled = repositories.jobs.save(businessId, {
+      ...job,
+      updatedAt: this.now(),
+      status: JobStatus.Cancelled,
+    });
+    const lead = required(repositories.leads.get(businessId, job.leadId), 'Lead not found');
+    this.activity(businessId, job.contactId, lead.conversationId, ActivityType.JobCancelled, 'Job cancelled.', { jobId }, `${jobId}:cancelled`);
+    this.closeOpportunityLost(businessId, job.leadId, OpportunityLostReason.Cancelled, `${jobId}:lost`);
+    return cancelled;
   }
 
   completeJob(businessId: string, jobId: string): Job {
     const repositories = this.database.repositories;
     const job = required(repositories.jobs.get(businessId, jobId), 'Job not found');
+    if (job.status === JobStatus.Completed) return job;
     if (job.status === JobStatus.Cancelled) throw new DomainError('Cancelled jobs cannot be completed', 'INVALID_JOB_STATE');
+    if (job.status !== JobStatus.Scheduled && job.status !== JobStatus.InProgress) {
+      throw new DomainError('A job must be scheduled before completion', 'INVALID_JOB_STATE');
+    }
     const completed = repositories.jobs.save(businessId, {
       ...job,
       updatedAt: this.now(),
@@ -1070,6 +1499,8 @@ export class CloserService {
       causationId: `${job.id}:completed`,
       correlationId: job.id,
     });
+    const lead = required(repositories.leads.get(businessId, job.leadId), 'Lead not found');
+    this.activity(businessId, job.contactId, lead.conversationId, ActivityType.JobCompleted, 'Job completed.', { jobId }, `${jobId}:completed:activity`);
     if (!this.closeIfSettled(businessId, job.leadId, PaymentReferenceType.Job, job.id)) {
       const lead = required(repositories.leads.get(businessId, job.leadId), 'Lead not found');
       this.replaceNextAction(businessId, lead.conversationId, NextActionType.CollectBalance, 'Job is complete; collect the remaining balance.', false);
@@ -1081,6 +1512,7 @@ export class CloserService {
         addHours(this.now(), 24),
       );
     }
+    this.reconcileOpportunity(businessId, job.leadId);
     return completed;
   }
 
@@ -1095,19 +1527,31 @@ export class CloserService {
     )[0];
     if (existing) {
       if (
+        existing.contactId !== input.contactId ||
+        existing.referenceType !== input.referenceType ||
         existing.referenceId !== input.referenceId ||
         existing.amountCents !== input.amountCents ||
-        existing.kind !== input.kind
+        existing.kind !== input.kind ||
+        existing.originalPaymentId !== (input.originalPaymentId ?? null)
       ) {
         throw new DomainError('Idempotency key was reused for a different payment', 'IDEMPOTENCY_CONFLICT');
       }
       return existing;
     }
-    const total = this.totalForReference(input.businessId, input.referenceType, input.referenceId);
+    const reference = this.referenceDetails(input.businessId, input.referenceType, input.referenceId);
+    if (reference.contactId !== input.contactId) {
+      throw new DomainError('Payment customer does not match the commercial reference', 'CONTACT_MISMATCH');
+    }
     if (input.kind === PaymentKind.Refund) {
       const originalId = required(input.originalPaymentId ?? null, 'Refund requires original payment');
       const original = required(repositories.payments.get(input.businessId, originalId), 'Original payment not found');
-      if (original.referenceId !== input.referenceId || original.kind === PaymentKind.Refund) {
+      if (
+        original.contactId !== input.contactId ||
+        original.referenceType !== input.referenceType ||
+        original.referenceId !== input.referenceId ||
+        original.kind === PaymentKind.Refund ||
+        original.status !== PaymentStatus.Collected
+      ) {
         throw new DomainError('Refund does not match the original payment', 'INVALID_REFUND');
       }
       const refunded = repositories.payments
@@ -1132,11 +1576,6 @@ export class CloserService {
       collectedAt: this.now(),
     };
     repositories.payments.save(input.businessId, payment);
-    this.cancelFollowUpsForReference(
-      input.businessId,
-      input.referenceType,
-      input.referenceId,
-    );
     this.recordRevenueEvent({
       businessId: input.businessId,
       contactId: input.contactId,
@@ -1166,16 +1605,15 @@ export class CloserService {
         );
       }
     }
-    if (input.kind !== PaymentKind.Refund) {
-      const leadId =
-        input.referenceType === PaymentReferenceType.Appointment
-          ? required(repositories.appointments.get(input.businessId, input.referenceId), 'Appointment not found').leadId
-          : input.referenceType === PaymentReferenceType.Job
-            ? required(repositories.jobs.get(input.businessId, input.referenceId), 'Job not found').leadId
-            : required(repositories.quotes.get(input.businessId, input.referenceId), 'Quote not found').leadId;
-      this.closeIfSettled(input.businessId, leadId, input.referenceType, input.referenceId);
-    }
-    this.activity(input.businessId, input.contactId, null, ActivityType.PaymentChanged, `${input.kind} recorded for ${total} total.`);
+    const leadId = this.leadIdForReference(input.businessId, input.referenceType, input.referenceId);
+    const lead = required(repositories.leads.get(input.businessId, leadId), 'Lead not found');
+    const activityType = input.kind === PaymentKind.Refund
+      ? ActivityType.RefundRecorded
+      : input.kind === PaymentKind.Deposit
+        ? ActivityType.DepositCollected
+        : ActivityType.BalanceCollected;
+    this.activity(input.businessId, input.contactId, lead.conversationId, activityType, `${input.kind.toLowerCase()} recorded.`, { paymentId: payment.id, amountCents: input.amountCents, referenceId: input.referenceId }, `${payment.id}:activity`);
+    this.reconcileOpportunity(input.businessId, leadId);
     return payment;
   }
 
@@ -1219,7 +1657,12 @@ export class CloserService {
 
   balance(businessId: string, referenceType: PaymentReferenceType, referenceId: string): number {
     const total = this.totalForReference(businessId, referenceType, referenceId);
-    return remainingBalance(total, this.database.repositories.payments.list(businessId), referenceId);
+    return remainingBalance(
+      total,
+      this.database.repositories.payments.list(businessId),
+      referenceId,
+      referenceType,
+    );
   }
 
   private buildAssistantContext(
@@ -1355,6 +1798,7 @@ export class CloserService {
     type: NextActionType,
     reason: string,
     automatic: boolean,
+    dueAt: string | null = this.now(),
   ): NextAction {
     const repositories = this.database.repositories;
     const conversation = required(repositories.conversations.get(businessId, conversationId), 'Conversation not found');
@@ -1362,6 +1806,19 @@ export class CloserService {
       repositories.leads.find(businessId, (candidate) => candidate.conversationId === conversationId)[0] ?? null,
       'Lead not found',
     );
+    const current = repositories.nextActions.find(
+      businessId,
+      (action) => action.leadId === lead.id && action.status === NextActionStatus.Pending,
+    )[0];
+    if (
+      current &&
+      current.type === type &&
+      current.reason === reason &&
+      current.automatic === automatic &&
+      current.dueAt === dueAt
+    ) {
+      return current;
+    }
     repositories.nextActions
       .find(businessId, (action) => action.leadId === lead.id && action.status === NextActionStatus.Pending)
       .forEach((action) =>
@@ -1378,7 +1835,7 @@ export class CloserService {
       type,
       status: NextActionStatus.Pending,
       reason,
-      dueAt: this.now(),
+      dueAt,
       automatic,
     };
     repositories.nextActions.save(businessId, action);
@@ -1416,28 +1873,7 @@ export class CloserService {
       repositories.conversations.get(businessId, lead.conversationId),
       'Conversation not found',
     );
-    repositories.nextActions
-      .find(businessId, (action) => action.leadId === lead.id && action.status === NextActionStatus.Pending)
-      .forEach((action) => repositories.nextActions.save(businessId, {
-        ...action,
-        updatedAt: this.now(),
-        status: NextActionStatus.Completed,
-      }));
-    repositories.leads.save(businessId, {
-      ...lead,
-      updatedAt: this.now(),
-      status: LeadStatus.Won,
-      nextActionId: null,
-      closedAt: this.now(),
-    });
-    repositories.conversations.save(businessId, {
-      ...conversation,
-      updatedAt: this.now(),
-      state: ConversationState.Complete,
-      mode: ConversationMode.Closed,
-      automationEnabled: false,
-      nextActionId: null,
-    });
+    this.closeWon(businessId, lead, conversation);
     return true;
   }
 
@@ -1494,6 +1930,151 @@ export class CloserService {
     return required(repositories.jobs.get(businessId, referenceId), 'Job not found');
   }
 
+  private assertOpenLead(lead: Lead): void {
+    if ([LeadStatus.Won, LeadStatus.Lost, LeadStatus.Archived].includes(lead.status)) {
+      throw new DomainError('The commercial opportunity is closed', 'INVALID_LEAD_STATE');
+    }
+  }
+
+  private validateJobSchedule(
+    businessId: string,
+    jobId: string,
+    staffId: string,
+    startAt: string,
+    endAt: string,
+  ): { normalizedStart: string; normalizedEnd: string } {
+    const start = new Date(startAt);
+    const end = new Date(endAt);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) {
+      throw new DomainError('Job schedule is invalid', 'INVALID_DATE');
+    }
+    const normalizedStart = start.toISOString();
+    const normalizedEnd = end.toISOString();
+    const repositories = this.database.repositories;
+    const jobConflict = repositories.jobs.find(
+      businessId,
+      (candidate) =>
+        candidate.id !== jobId &&
+        candidate.assignedStaffId === staffId &&
+        [JobStatus.Scheduled, JobStatus.InProgress].includes(candidate.status) &&
+        intervalsOverlap(
+          normalizedStart,
+          normalizedEnd,
+          candidate.scheduledStartAt,
+          candidate.scheduledEndAt,
+        ),
+    )[0];
+    const appointmentConflict = repositories.appointments.find(
+      businessId,
+      (appointment) =>
+        appointment.staffId === staffId &&
+        appointment.status !== AppointmentStatus.Cancelled &&
+        intervalsOverlap(
+          normalizedStart,
+          normalizedEnd,
+          appointment.startAt,
+          appointment.endAt,
+        ),
+    )[0];
+    if (jobConflict || appointmentConflict) {
+      throw new DomainError('The staff member already has work scheduled at that time', 'SCHEDULE_CONFLICT');
+    }
+    return { normalizedStart, normalizedEnd };
+  }
+
+  private assertNoJobConflict(
+    businessId: string,
+    staffId: string,
+    startAt: string,
+    endAt: string,
+  ): void {
+    const conflict = this.database.repositories.jobs.find(
+      businessId,
+      (job) =>
+        job.assignedStaffId === staffId &&
+        [JobStatus.Scheduled, JobStatus.InProgress].includes(job.status) &&
+        intervalsOverlap(startAt, endAt, job.scheduledStartAt, job.scheduledEndAt),
+    )[0];
+    if (conflict) {
+      throw new DomainError('The staff member already has work scheduled at that time', 'SCHEDULE_CONFLICT');
+    }
+  }
+
+  private leadIdForReference(
+    businessId: string,
+    referenceType: PaymentReferenceType,
+    referenceId: string,
+  ): string {
+    const repositories = this.database.repositories;
+    if (referenceType === PaymentReferenceType.Appointment) {
+      return required(repositories.appointments.get(businessId, referenceId), 'Appointment not found').leadId;
+    }
+    if (referenceType === PaymentReferenceType.Quote) {
+      return required(repositories.quotes.get(businessId, referenceId), 'Quote not found').leadId;
+    }
+    return required(repositories.jobs.get(businessId, referenceId), 'Job not found').leadId;
+  }
+
+  private depositOutstanding(opportunity: CommercialOpportunityView): number | null {
+    const repositories = this.database.repositories;
+    const requiredCents = opportunity.jobId
+      ? repositories.jobs.get(opportunity.businessId, opportunity.jobId)?.depositRequiredCents
+      : opportunity.appointmentId
+        ? repositories.appointments.get(opportunity.businessId, opportunity.appointmentId)?.depositRequiredCents
+        : null;
+    return requiredCents === null || requiredCents === undefined
+      ? null
+      : Math.max(0, requiredCents - opportunity.collectedCents);
+  }
+
+  private clearPendingActions(businessId: string, lead: Lead): void {
+    const repositories = this.database.repositories;
+    repositories.nextActions
+      .find(
+        businessId,
+        (action) => action.leadId === lead.id && action.status === NextActionStatus.Pending,
+      )
+      .forEach((action) => repositories.nextActions.save(businessId, {
+        ...action,
+        updatedAt: this.now(),
+        status: NextActionStatus.Completed,
+      }));
+    const conversation = repositories.conversations.get(businessId, lead.conversationId);
+    repositories.leads.save(businessId, { ...lead, updatedAt: this.now(), nextActionId: null });
+    if (conversation) {
+      repositories.conversations.save(businessId, {
+        ...conversation,
+        updatedAt: this.now(),
+        nextActionId: null,
+      });
+    }
+  }
+
+  private closeWon(businessId: string, lead: Lead, conversation: Conversation): void {
+    if (lead.status === LeadStatus.Won) return;
+    this.clearPendingActions(businessId, lead);
+    this.followUpService.cancelPending(businessId, lead.conversationId);
+    const repositories = this.database.repositories;
+    repositories.leads.save(businessId, {
+      ...required(repositories.leads.get(businessId, lead.id), 'Lead not found'),
+      updatedAt: this.now(),
+      status: LeadStatus.Won,
+      lostReason: null,
+      nextActionId: null,
+      closedAt: this.now(),
+    });
+    repositories.conversations.save(businessId, {
+      ...conversation,
+      updatedAt: this.now(),
+      state: ConversationState.Complete,
+      inferredStage: ConversationStage.ClosedWon,
+      mode: ConversationMode.Closed,
+      automationEnabled: false,
+      nextActionId: null,
+    });
+    this.activity(businessId, lead.contactId, lead.conversationId, ActivityType.OpportunityWon, 'Opportunity closed won.', {}, `${lead.id}:won`);
+  }
+
   private appointmentCandidate(
     businessId: string,
     contactId: string,
@@ -1504,6 +2085,7 @@ export class CloserService {
     durationMinutes: number,
     totalCents: number,
     depositRequiredCents: number,
+    operationKey: string,
   ): Appointment {
     const start = new Date(startAt);
     if (Number.isNaN(start.getTime())) throw new DomainError('Invalid appointment start time', 'INVALID_DATE');
@@ -1520,6 +2102,7 @@ export class CloserService {
       depositRequiredCents,
       confirmedAt: null,
       completedAt: null,
+      operationKey,
     };
   }
 
@@ -1539,16 +2122,18 @@ export class CloserService {
     conversationId: string | null,
     type: ActivityType,
     summary: string,
-  ): Activity {
-    const activity: Activity = {
-      ...this.entityBase(businessId),
+    metadata: Record<string, string | number | boolean | null> = {},
+    operationKey?: string,
+  ) {
+    return this.timelineService.record({
+      businessId,
       contactId,
       conversationId,
       type,
       summary,
-      metadata: {},
-    };
-    return this.database.repositories.activities.save(businessId, activity);
+      metadata,
+      ...(operationKey ? { operationKey } : {}),
+    });
   }
 
   private entityBase(businessId: string): TenantEntity {
@@ -1613,4 +2198,37 @@ function resumedActionReason(action: NextActionType): string {
 
 function addHours(value: string, hours: number): string {
   return new Date(new Date(value).getTime() + hours * 60 * 60 * 1000).toISOString();
+}
+
+function intervalsOverlap(
+  firstStart: string,
+  firstEnd: string,
+  secondStart: string | null,
+  secondEnd: string | null,
+): boolean {
+  if (!secondStart || !secondEnd) return false;
+  return new Date(firstStart).getTime() < new Date(secondEnd).getTime()
+    && new Date(secondStart).getTime() < new Date(firstEnd).getTime();
+}
+
+function conversationStateForStage(stage: ConversationStage): ConversationState {
+  if (stage === ConversationStage.NewInquiry) return ConversationState.NewInquiry;
+  if ([ConversationStage.Discovery, ConversationStage.Qualification, ConversationStage.InformationCollection, ConversationStage.HumanReview].includes(stage)) {
+    return ConversationState.Qualifying;
+  }
+  if ([ConversationStage.ReadyToBook, ConversationStage.AppointmentProposed].includes(stage)) {
+    return ConversationState.ReadyToBook;
+  }
+  if ([ConversationStage.AwaitingDeposit, ConversationStage.AwaitingConfirmation, ConversationStage.Booked].includes(stage)) {
+    return ConversationState.AppointmentScheduled;
+  }
+  if ([ConversationStage.ReadyForQuote, ConversationStage.QuotePreparation].includes(stage)) {
+    return ConversationState.QuoteInProgress;
+  }
+  if (stage === ConversationStage.QuoteSent) return ConversationState.QuoteSent;
+  if (stage === ConversationStage.JobScheduled) return ConversationState.JobScheduled;
+  if ([ConversationStage.ServiceComplete, ConversationStage.AwaitingBalance].includes(stage)) {
+    return ConversationState.AwaitingPayment;
+  }
+  return ConversationState.Complete;
 }

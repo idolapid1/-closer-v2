@@ -19,6 +19,7 @@ import {
   MessagePurpose,
   NextActionStatus,
   NextActionType,
+  OpportunityLostReason,
   PaymentKind,
   PaymentReferenceType,
   PaymentStatus,
@@ -251,7 +252,7 @@ export function createDemoDatabase(): DatabaseSchema {
       active: true,
       serviceIds: [serviceId],
     });
-    services.push({
+      services.push({
       ...base({ id: serviceId, businessId: config.id }),
       name: config.serviceName,
       description: config.serviceDescription,
@@ -259,6 +260,7 @@ export function createDemoDatabase(): DatabaseSchema {
       fixedPriceCents: config.fixedPriceCents,
       active: true,
       requiresDeposit: true,
+      workflowType: config.workflowType,
     });
     availabilityRules.push({
       ...base({ id: `${config.id}-availability`, businessId: config.id }),
@@ -327,6 +329,7 @@ export function createDemoDatabase(): DatabaseSchema {
         serviceId: key === 'new' ? null : serviceId,
         nextActionId: isClosed ? null : actionId,
         closedAt: isClosed ? DEMO_NOW : null,
+        lostReason: isClosed ? OpportunityLostReason.NoLongerInterested : null,
       });
       if (!isClosed) {
         nextActions.push({
@@ -415,6 +418,8 @@ export function createDemoDatabase(): DatabaseSchema {
       type: ActivityType.HandoffStarted,
       summary: 'Assistant paused and handed the conversation to a human.',
       metadata: { reason: HandoffReason.Complaint },
+      occurredAt: DEMO_NOW,
+      operationKey: `${config.id}:seed:handoff`,
     });
 
     const completedContactId = `${config.id}-contact-completed`;
@@ -435,6 +440,7 @@ export function createDemoDatabase(): DatabaseSchema {
         depositRequiredCents: Math.round(totalCents * 0.25),
         confirmedAt: '2026-08-10T08:00:00.000Z',
         completedAt: DEMO_NOW,
+        operationKey: `${appointmentId}:seed`,
       });
       addDeposit(
         config.id,
@@ -472,6 +478,7 @@ export function createDemoDatabase(): DatabaseSchema {
         status: QuoteStatus.Accepted,
         expiresAt: null,
         acceptedAt: '2026-08-10T08:00:00.000Z',
+        operationKey: `${quoteId}:seed`,
       });
       jobs.push({
         ...base({ id: jobId, businessId: config.id }),
@@ -486,6 +493,7 @@ export function createDemoDatabase(): DatabaseSchema {
         totalCents,
         depositRequiredCents: Math.round(totalCents * 0.25),
         completedAt: DEMO_NOW,
+        operationKey: `${jobId}:seed`,
       });
       addDeposit(
         config.id,

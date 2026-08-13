@@ -73,4 +73,30 @@ describe('versioned persistence', () => {
     expect(snapshot.conversations[0]?.inferredStage).toBeDefined();
     expect(JSON.parse(storage.read(STORAGE_KEY) ?? '{}').schemaVersion).toBe(SCHEMA_VERSION);
   });
+
+  it('migrates a valid Phase 2 schema to commercial journey defaults', () => {
+    const storage = new MemoryStorageAdapter();
+    const seed = createDemoDatabase();
+    const legacy = structuredClone(seed) as unknown as Record<string, unknown>;
+    legacy.schemaVersion = 2;
+    (legacy.leads as Array<Record<string, unknown>>).forEach((lead) => delete lead.lostReason);
+    (legacy.services as Array<Record<string, unknown>>).forEach((service) => delete service.workflowType);
+    (legacy.activities as Array<Record<string, unknown>>).forEach((activity) => {
+      delete activity.occurredAt;
+      delete activity.operationKey;
+    });
+    for (const collection of ['appointments', 'quotes', 'jobs']) {
+      (legacy[collection] as Array<Record<string, unknown>>).forEach((entity) => delete entity.operationKey);
+    }
+    storage.write(STORAGE_KEY, JSON.stringify(legacy));
+    const database = new LocalDatabase(storage, seed);
+    const snapshot = database.snapshot();
+    expect(snapshot.schemaVersion).toBe(3);
+    expect(snapshot.leads.every((lead) => 'lostReason' in lead)).toBe(true);
+    expect(snapshot.services.every((service) => service.workflowType)).toBe(true);
+    expect(snapshot.activities.every((activity) => activity.occurredAt && 'operationKey' in activity)).toBe(true);
+    expect(snapshot.appointments.every((appointment) => appointment.operationKey)).toBe(true);
+    expect(snapshot.quotes.every((quote) => quote.operationKey)).toBe(true);
+    expect(snapshot.jobs.every((job) => job.operationKey)).toBe(true);
+  });
 });

@@ -5,6 +5,7 @@ import {
   FollowUpStatus,
   JobStatus,
   LeadStatus,
+  PaymentReferenceType,
   QuoteStatus,
   WorkflowType,
   type Appointment,
@@ -52,6 +53,7 @@ export class ConversationStageService {
         appointment.totalCents,
         context.payments,
         appointment.id,
+        PaymentReferenceType.Appointment,
       );
       if (appointment.status === AppointmentStatus.Completed) {
         return balance > 0 ? ConversationStage.AwaitingBalance : ConversationStage.ClosedWon;
@@ -64,7 +66,12 @@ export class ConversationStageService {
 
     const job = newest(context.jobs);
     if (job) {
-      const balance = remainingBalance(job.totalCents, context.payments, job.id);
+      const balance = remainingBalance(
+        job.totalCents,
+        context.payments,
+        job.id,
+        PaymentReferenceType.Job,
+      );
       if (job.status === JobStatus.Completed) {
         return balance > 0 ? ConversationStage.AwaitingBalance : ConversationStage.ClosedWon;
       }
@@ -111,5 +118,9 @@ export class ConversationStageService {
 }
 
 function newest<T extends { updatedAt: string }>(items: T[]): T | null {
-  return [...items].sort((first, second) => second.updatedAt.localeCompare(first.updatedAt))[0] ?? null;
+  return items.reduce<T | null>(
+    (latest, candidate) =>
+      latest === null || candidate.updatedAt >= latest.updatedAt ? candidate : latest,
+    null,
+  );
 }

@@ -26,4 +26,12 @@ Opt-out persists and blocks marketing. Operational communication remains indepen
 
 ## Scheduling, quote, job, and completion
 
-Appointment duration comes from Service. Active appointments for the same staff cannot overlap. Availability claims use validated rules and existing appointments. Quote math uses integer cents; acceptance creates at most one job. Completion records delivery, not cash. An opportunity closes won only when completed and fully paid.
+The selected Service determines the journey family. Appointment duration comes from Service. Active appointments and scheduled jobs for the same staff cannot overlap. Availability claims use validated rules and existing work. Quote math uses integer cents; acceptance creates at most one job. A job must collect its required deposit before scheduling and must be scheduled before completion. Completion records delivery, not cash. An opportunity closes won only when completed and fully paid.
+
+## Closing and continuation
+
+Lost reasons are typed: customer declined, cancelled, outside service area, no longer interested, quote expired, or unavailable. Closed opportunities have no pending sales action or automated follow-up. A lost opportunity may be explicitly reopened when the customer returns; a won opportunity remains closed unless a validated refund recreates a real balance. A new opportunity is allowed for genuinely new work after previous work is closed.
+
+## Idempotency
+
+Inbound provider IDs, appointment/quote/job operation keys, payment keys, RevenueEvent causation IDs, follow-up scenarios, and activity operation keys protect their respective side effects. Reuse with different business facts fails. Duplicate completion, acceptance, deposit, payment, scheduling, or activity delivery returns existing truth or performs no additional side effect.

@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { Card, Empty, ErrorNotice, Page, SuccessNotice, displayError, formatMoney, readable } from '../../components/ui';
-import { AppointmentStatus, PaymentReferenceType, WorkflowType } from '../../domain/entities';
+import { AppointmentStatus, PaymentKind, PaymentReferenceType, WorkflowType } from '../../domain/entities';
 import { useCloser } from '../../state/closerState';
 
 export function AppointmentsPage() {
@@ -81,6 +81,7 @@ export function AppointmentsPage() {
           <div className="table-wrap"><table><thead><tr><th>Customer</th><th>When</th><th>Status</th><th>Balance</th><th>Actions</th></tr></thead><tbody>
             {appointments.map((appointment) => {
               const balance = service.balance(businessId, PaymentReferenceType.Appointment, appointment.id);
+              const refundablePayment = state.payments.find((payment) => payment.businessId === businessId && payment.referenceType === PaymentReferenceType.Appointment && payment.referenceId === appointment.id && payment.kind !== PaymentKind.Refund);
               return <tr key={appointment.id}>
                 <td>{contacts.find((contact) => contact.id === appointment.contactId)?.displayName}</td>
                 <td>{new Date(appointment.startAt).toLocaleString()}</td>
@@ -89,8 +90,11 @@ export function AppointmentsPage() {
                 <td><div className="button-row compact">
                   <button type="button" disabled={appointment.depositRequiredCents === 0 || balance <= appointment.totalCents - appointment.depositRequiredCents} onClick={() => run(() => service.recordDeposit(businessId, PaymentReferenceType.Appointment, appointment.id), 'Deposit recorded once.')}>Deposit</button>
                   <button type="button" disabled={appointment.status !== AppointmentStatus.Tentative} onClick={() => run(() => service.confirmAppointment(businessId, appointment.id), 'Appointment confirmed.')}>Confirm</button>
+                  <button type="button" disabled={appointment.status !== AppointmentStatus.Tentative} onClick={() => run(() => service.rescheduleAppointment(businessId, appointment.id, new Date(new Date(appointment.startAt).getTime() + 24 * 60 * 60 * 1000).toISOString()), 'Appointment moved by one day.')}>Reschedule</button>
+                  <button type="button" disabled={appointment.status === AppointmentStatus.Completed || appointment.status === AppointmentStatus.Cancelled} onClick={() => run(() => service.cancelAppointment(businessId, appointment.id), 'Appointment cancelled and opportunity closed lost.')}>Cancel</button>
                   <button type="button" disabled={appointment.status === AppointmentStatus.Completed || appointment.status === AppointmentStatus.Cancelled} onClick={() => run(() => service.completeAppointment(businessId, appointment.id), 'Appointment completed; payment remains separate.')}>Complete</button>
                   <button type="button" disabled={balance === 0} onClick={() => run(() => service.collectRemainingBalance(businessId, PaymentReferenceType.Appointment, appointment.id), 'Remaining balance collected.')}>Collect balance</button>
+                  <button type="button" disabled={!refundablePayment} onClick={() => refundablePayment && run(() => service.recordPayment({ businessId, contactId: appointment.contactId, referenceType: PaymentReferenceType.Appointment, referenceId: appointment.id, kind: PaymentKind.Refund, amountCents: refundablePayment.amountCents, idempotencyKey: `${refundablePayment.id}:ui-refund`, originalPaymentId: refundablePayment.id }), 'Payment refunded; commercial state reconciled.')}>Refund payment</button>
                 </div></td>
               </tr>;
             })}

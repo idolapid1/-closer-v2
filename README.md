@@ -1,6 +1,6 @@
-# CLOSER v2 — Phase 2
+# CLOSER v2 — Phase 3
 
-CLOSER is a revenue and customer-conversation operating system for service businesses. Phase 2 adds a safe, deterministic Smart WhatsApp Assistant Engine to the verified Phase 1 inquiry-to-payment foundation.
+CLOSER is a revenue and customer-conversation operating system for service businesses. Phase 3 joins the verified conversation, appointment, quote/job, payment, and action components into complete inquiry-to-collection commercial journeys.
 
 This is an internal, local-only engineering build. It uses fictional data, deterministic mock AI and messaging providers, and versioned browser storage. It connects to no external API and contains no secrets.
 
@@ -16,7 +16,7 @@ npm install
 npm run dev
 ```
 
-Vite prints the local URL, normally `http://localhost:5173`. Open `/debug` for the Conversation Simulator or `/demo` for the Phase 1 business-flow controls. Use the business selector to switch among Luma Aesthetics, Northstar Auto Detail, and BrightHome Services.
+Vite prints the local URL, normally `http://localhost:5173`. Open `/actions` to see what a business needs to do now, `/customer/:id` for the internal customer workspace, or `/debug` for the Conversation Simulator. Use the business selector to switch among Luma Aesthetics, Northstar Auto Detail, and BrightHome Services.
 
 ## Quality commands
 
@@ -35,14 +35,15 @@ npm audit
 
 - `/demo` — tenant summary, scenario contacts, and current actions
 - `/inbox` — WhatsApp-first conversations and the one action needing attention
-- `/customer/:id` — message simulation, grounded assistant proposal, human control, and consent
+- `/actions` — plain-language Action Center for every active opportunity
+- `/customer/:id` — conversation, opportunity, structured facts, work, payments, action, handoff, and activity timeline
 - `/appointments` — appointment, deposit, confirmation, completion, and balance controls
 - `/quotes` — quote/job, deposit, scheduling, completion, and balance controls
 - `/debug` — Conversation Simulator, tool results, memory, follow-ups, handoffs, financial events, raw tenant state, and reset
 
 ## Architecture and trust boundary
 
-Domain entities and rules are pure TypeScript. `CloserService` is the application boundary and the only layer allowed to coordinate mutations. Focused conversation services infer stages, retrieve knowledge, normalize customer memory, validate provider decisions, execute safe tools, and schedule deterministic follow-ups.
+Domain entities and rules are pure TypeScript. `CloserService` is the mutation boundary. `CommercialJourneyService` derives opportunity totals, collection, stage, relationships, and one action from domain truth; `ActivityTimelineService` records tenant-scoped idempotent business events. Focused conversation services retain the Phase 2 trust boundary.
 
 The AI provider is untrusted and has no repository, network, clock, or mutation access. The application reconstructs auto-sent Level 1/2 replies from validated knowledge/tool results. Appointment, quote, deposit, payment, and scheduling changes are proposals until the existing application use cases validate them. React never accesses `localStorage` or implements business rules.
 
@@ -50,7 +51,7 @@ See [Architecture](docs/ARCHITECTURE.md), [Conversation Engine](docs/CONVERSATIO
 
 ## Local data
 
-Schema v2 is stored under `closer-v2:database` in `localStorage`. A valid Phase 1 schema is migrated; invalid or corrupt data falls back to the deterministic seed. Use **Debug → Reset scenarios** to restore all three tenants. No real customer data is included.
+Schema v3 is stored under `closer-v2:database` in `localStorage`. Valid Phase 1 and Phase 2 schemas are migrated with safe commercial defaults; invalid or corrupt data falls back to the deterministic seed. Use **Debug → Reset scenarios** to restore all three tenants. No real customer data is included.
 
 ## Remote backup
 
@@ -66,4 +67,6 @@ Never commit `.env` files, credentials, tokens, customer exports, or production 
 
 ## Deliberate exclusions
 
-Phase 2 does not include production AI, real WhatsApp/Meta/Instagram, a backend, authentication, background workers, calendar/payment integrations, deployment, or final product design. Follow-ups are inspectable scheduled records, not timers. The deterministic language matcher is a safety/test engine, not an NLP substitute.
+Phase 3 does not include production AI, real WhatsApp/Meta/Instagram, a backend, authentication, background workers, calendar/payment integrations, deployment, or final product design. Follow-ups are inspectable scheduled records, not timers. Payments and refunds are validated manual records, not gateway transactions.
+
+See [Commercial journey](docs/COMMERCIAL_JOURNEY.md) for reconciliation, closing, recovery, idempotency, action, and activity rules.

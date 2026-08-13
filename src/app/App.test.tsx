@@ -22,6 +22,7 @@ describe('internal demo interface', () => {
   it.each([
     ['/demo', 'Luma Aesthetics'],
     ['/inbox', 'Inbox'],
+    ['/actions', 'What needs attention'],
     ['/customer/biz-clinic-contact-new', 'Alex Morgan'],
     ['/appointments', 'Appointments'],
     ['/quotes', 'Quotes & jobs'],

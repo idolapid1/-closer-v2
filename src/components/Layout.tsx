@@ -4,6 +4,7 @@ import { BusinessSwitcher } from './BusinessSwitcher';
 const links = [
   ['/demo', 'Demo'],
   ['/inbox', 'Inbox'],
+  ['/actions', 'Actions'],
   ['/appointments', 'Appointments'],
   ['/quotes', 'Quotes & jobs'],
   ['/debug', 'Debug'],
@@ -15,7 +16,7 @@ export function Layout() {
       <header className="topbar">
         <div>
           <strong>CLOSER v2</strong>
-          <small>Phase 2 engineering simulator</small>
+          <small>Phase 3 business journey simulator</small>
         </div>
         <BusinessSwitcher />
       </header>

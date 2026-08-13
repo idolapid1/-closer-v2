@@ -9,6 +9,7 @@ import {
   type Lead,
   type NextAction,
   type Payment,
+  type PaymentReferenceType,
   type QuoteItem,
 } from './entities';
 
@@ -85,11 +86,17 @@ export function assertNoDoubleBooking(candidate: Appointment, existing: Appointm
   }
 }
 
-export function collectedForReference(payments: Payment[], referenceId: string): number {
+export function collectedForReference(
+  payments: Payment[],
+  referenceId: string,
+  referenceType?: PaymentReferenceType,
+): number {
   return payments
     .filter(
       (payment) =>
-        payment.referenceId === referenceId && payment.status === PaymentStatus.Collected,
+        payment.referenceId === referenceId &&
+        (referenceType === undefined || payment.referenceType === referenceType) &&
+        payment.status === PaymentStatus.Collected,
     )
     .reduce(
       (total, payment) =>
@@ -98,9 +105,14 @@ export function collectedForReference(payments: Payment[], referenceId: string):
     );
 }
 
-export function remainingBalance(totalCents: number, payments: Payment[], referenceId: string): number {
+export function remainingBalance(
+  totalCents: number,
+  payments: Payment[],
+  referenceId: string,
+  referenceType?: PaymentReferenceType,
+): number {
   assertMoney(totalCents, 'totalCents');
-  return Math.max(0, totalCents - collectedForReference(payments, referenceId));
+  return Math.max(0, totalCents - collectedForReference(payments, referenceId, referenceType));
 }
 
 export function canAcceptQuote(status: QuoteStatus): boolean {

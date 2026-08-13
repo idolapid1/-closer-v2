@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { Card, Empty, ErrorNotice, Page, SuccessNotice, displayError, formatMoney, readable } from '../../components/ui';
-import { JobStatus, PaymentReferenceType, QuoteStatus, WorkflowType } from '../../domain/entities';
+import { JobStatus, PaymentKind, PaymentReferenceType, QuoteStatus, WorkflowType } from '../../domain/entities';
 import { useCloser } from '../../state/closerState';
 
 export function QuotesPage() {
@@ -52,17 +52,21 @@ export function QuotesPage() {
       <Card title="Quotes">
         {quotes.length === 0 ? <Empty>No quotes for this business.</Empty> : <div className="table-wrap"><table><thead><tr><th>Customer</th><th>Total</th><th>Status</th><th>Actions</th></tr></thead><tbody>{quotes.map((quote) => <tr key={quote.id}>
           <td>{contacts.find((contact) => contact.id === quote.contactId)?.displayName}</td><td>{formatMoney(quote.totalCents, currency)}</td><td>{readable(quote.status)}</td>
-          <td><div className="button-row compact"><button type="button" disabled={quote.status !== QuoteStatus.Draft && quote.status !== QuoteStatus.ChangeRequested} onClick={() => run(() => service.sendQuote(businessId, quote.id), 'Quote sent.')}>Send</button><button type="button" disabled={![QuoteStatus.Sent, QuoteStatus.Viewed, QuoteStatus.ChangeRequested].includes(quote.status)} onClick={() => run(() => service.acceptQuote(businessId, quote.id), 'Quote accepted and job created.')}>Accept + create job</button></div></td>
+          <td><div className="button-row compact"><button type="button" disabled={quote.status !== QuoteStatus.Draft && quote.status !== QuoteStatus.ChangeRequested} onClick={() => run(() => service.sendQuote(businessId, quote.id), 'Quote sent.')}>Send</button><button type="button" disabled={![QuoteStatus.Sent, QuoteStatus.Viewed, QuoteStatus.ChangeRequested].includes(quote.status)} onClick={() => run(() => service.acceptQuote(businessId, quote.id), 'Quote accepted and job created.')}>Accept + create job</button><button type="button" disabled={![QuoteStatus.Draft, QuoteStatus.Sent, QuoteStatus.Viewed, QuoteStatus.ChangeRequested].includes(quote.status)} onClick={() => run(() => service.declineQuote(businessId, quote.id), 'Quote declined and opportunity closed lost.')}>Decline</button></div></td>
         </tr>)}</tbody></table></div>}
       </Card>
       <Card title="Jobs">
         {jobs.length === 0 ? <Empty>No jobs for this business.</Empty> : <div className="table-wrap"><table><thead><tr><th>Customer</th><th>Status</th><th>Balance</th><th>Actions</th></tr></thead><tbody>{jobs.map((job) => {
           const balance = service.balance(businessId, PaymentReferenceType.Job, job.id);
+          const refundablePayment = state.payments.find((payment) => payment.businessId === businessId && payment.referenceType === PaymentReferenceType.Job && payment.referenceId === job.id && payment.kind !== PaymentKind.Refund);
           return <tr key={job.id}><td>{contacts.find((contact) => contact.id === job.contactId)?.displayName}</td><td>{readable(job.status)}</td><td>{formatMoney(balance, currency)}</td><td><div className="button-row compact">
             <button type="button" disabled={job.depositRequiredCents === 0 || balance <= job.totalCents - job.depositRequiredCents} onClick={() => run(() => service.recordDeposit(businessId, PaymentReferenceType.Job, job.id), 'Job deposit recorded once.')}>Deposit</button>
             <button type="button" disabled={job.status !== JobStatus.ReadyToSchedule} onClick={() => run(() => service.scheduleJob(businessId, job.id, staff[0]?.id ?? '', '2026-08-18T09:00:00.000Z', '2026-08-18T12:00:00.000Z'), 'Job scheduled.')}>Schedule</button>
+            <button type="button" disabled={job.status !== JobStatus.Scheduled} onClick={() => run(() => service.rescheduleJob(businessId, job.id, '2026-08-19T09:00:00.000Z', '2026-08-19T12:00:00.000Z'), 'Job rescheduled.')}>Reschedule</button>
+            <button type="button" disabled={job.status === JobStatus.Completed || job.status === JobStatus.Cancelled} onClick={() => run(() => service.cancelJob(businessId, job.id), 'Job cancelled and opportunity closed lost.')}>Cancel</button>
             <button type="button" disabled={job.status === JobStatus.Completed || job.status === JobStatus.Cancelled} onClick={() => run(() => service.completeJob(businessId, job.id), 'Job completed; payment remains separate.')}>Complete</button>
             <button type="button" disabled={balance === 0} onClick={() => run(() => service.collectRemainingBalance(businessId, PaymentReferenceType.Job, job.id), 'Remaining balance collected.')}>Collect balance</button>
+            <button type="button" disabled={!refundablePayment} onClick={() => refundablePayment && run(() => service.recordPayment({ businessId, contactId: job.contactId, referenceType: PaymentReferenceType.Job, referenceId: job.id, kind: PaymentKind.Refund, amountCents: refundablePayment.amountCents, idempotencyKey: `${refundablePayment.id}:ui-refund`, originalPaymentId: refundablePayment.id }), 'Payment refunded; commercial state reconciled.')}>Refund payment</button>
           </div></td></tr>;
         })}</tbody></table></div>}
       </Card>

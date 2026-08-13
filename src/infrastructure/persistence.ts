@@ -91,10 +91,12 @@ export function migrateDatabaseSchema(
   if (isDatabaseSchema(value)) return clone(value);
   if (!value || typeof value !== 'object') return null;
   const legacy = value as Record<string, unknown>;
-  if (legacy.schemaVersion !== 1) return null;
-  const legacyCollections = COLLECTIONS.filter(
-    (collection) => !['customerMemory', 'scheduledFollowUps', 'assistantDecisionRecords'].includes(collection),
-  );
+  if (legacy.schemaVersion !== 1 && legacy.schemaVersion !== 2) return null;
+  const legacyCollections = legacy.schemaVersion === 1
+    ? COLLECTIONS.filter(
+        (collection) => !['customerMemory', 'scheduledFollowUps', 'assistantDecisionRecords'].includes(collection),
+      )
+    : COLLECTIONS;
   if (
     !legacyCollections.every(
       (collection) =>
@@ -105,10 +107,11 @@ export function migrateDatabaseSchema(
   }
 
   const migrated = clone(legacy) as Record<string, unknown>;
-  migrated.schemaVersion = SCHEMA_VERSION;
-  migrated.customerMemory = [];
-  migrated.scheduledFollowUps = [];
-  migrated.assistantDecisionRecords = [];
+  if (legacy.schemaVersion === 1) {
+    migrated.customerMemory = [];
+    migrated.scheduledFollowUps = [];
+    migrated.assistantDecisionRecords = [];
+  }
   migrated.businessKnowledge = (legacy.businessKnowledge as Array<Record<string, unknown>>).map(
     (knowledge) => {
       const defaults = seed.businessKnowledge.find(
@@ -158,6 +161,29 @@ export function migrateDatabaseSchema(
       responsibleState: handoff.responsibleState ?? ConversationStage.HumanReview,
     }),
   );
+  migrated.leads = (legacy.leads as Array<Record<string, unknown>>).map((lead) => ({
+    ...lead,
+    lostReason: lead.lostReason ?? null,
+  }));
+  migrated.services = (legacy.services as Array<Record<string, unknown>>).map((service) => ({
+    ...service,
+    workflowType:
+      service.workflowType ??
+      seed.services.find((candidate) => candidate.id === service.id)?.workflowType ??
+      seed.businesses.find((candidate) => candidate.id === service.businessId)?.workflowType,
+  }));
+  for (const collection of ['appointments', 'quotes', 'jobs'] as const) {
+    migrated[collection] = (legacy[collection] as Array<Record<string, unknown>>).map((entity) => ({
+      ...entity,
+      operationKey: entity.operationKey ?? `migrated:${collection}:${String(entity.id)}`,
+    }));
+  }
+  migrated.activities = (legacy.activities as Array<Record<string, unknown>>).map((activity) => ({
+    ...activity,
+    occurredAt: activity.occurredAt ?? activity.createdAt,
+    operationKey: activity.operationKey ?? null,
+  }));
+  migrated.schemaVersion = SCHEMA_VERSION;
   return isDatabaseSchema(migrated) ? clone(migrated) : null;
 }
 

@@ -10,7 +10,7 @@ The owner-facing model is intentionally small:
 - deposits and remaining balance;
 - human control whenever automation should stop.
 
-Phase 2 supports one configurable product with `APPOINTMENT_SERVICE` and `QUOTE_JOB` workflows. Three fictional tenants demonstrate clinic, auto-detailing, and home-services qualification, tone, knowledge, safety, and follow-up behavior. The assistant is outcome-oriented: it answers verified facts, collects only missing information, proposes the next safe business action, or hands off. The UI remains an internal test surface, not the product design.
+Phase 3 supports one configurable product with `APPOINTMENT_SERVICE` and `QUOTE_JOB` commercial journeys. Three fictional tenants demonstrate clinic, auto-detailing, and home-services qualification, tone, knowledge, scheduling, deposits, completion, collection, recovery, and follow-up behavior. The assistant remains outcome-oriented and tenant-safe; validated domain state now reconciles the full customer journey. The UI remains an internal test surface, not the product design.
 
 The core promise is: “CLOSER handles customer inquiries, tells you who needs attention, and helps move every customer from first message to payment.”
 

@@ -1,9 +1,10 @@
 import { useState, type FormEvent } from 'react';
 import { useParams } from 'react-router-dom';
-import { Card, Empty, ErrorNotice, Page, SuccessNotice, displayError, readable } from '../../components/ui';
+import { Card, Empty, ErrorNotice, Page, SuccessNotice, displayError, formatMoney, readable } from '../../components/ui';
 import {
   ConversationMode,
   HandoffReason,
+  LeadStatus,
   MessageAuthor,
   MessagePurpose,
 } from '../../domain/entities';
@@ -23,6 +24,15 @@ export function CustomerPage() {
     (candidate) => candidate.businessId === businessId && candidate.contactId === contactId,
   );
   const handoff = state.humanHandoffs.find((candidate) => candidate.id === conversation?.handoffId);
+  const business = state.businesses.find((candidate) => candidate.id === businessId);
+  const selectedService = state.services.find((candidate) => candidate.businessId === businessId && candidate.id === lead?.serviceId);
+  const opportunity = lead ? service.opportunity(businessId, lead.id) : null;
+  const appointment = state.appointments.find((candidate) => candidate.businessId === businessId && candidate.id === opportunity?.appointmentId);
+  const quote = state.quotes.find((candidate) => candidate.businessId === businessId && candidate.id === opportunity?.quoteId);
+  const job = state.jobs.find((candidate) => candidate.businessId === businessId && candidate.id === opportunity?.jobId);
+  const memory = state.customerMemory.filter((candidate) => candidate.businessId === businessId && candidate.contactId === contactId);
+  const payments = state.payments.filter((candidate) => candidate.businessId === businessId && candidate.contactId === contactId);
+  const activities = contact ? service.activityTimeline(businessId, contact.id) : [];
   const messages = state.messages
     .filter((message) => message.businessId === businessId && message.conversationId === conversation?.id)
     .sort((first, second) => first.sentAt.localeCompare(second.sentAt));
@@ -88,10 +98,33 @@ export function CustomerPage() {
         <Card title="Next action">
           <strong>{action ? readable(action.type) : 'No immediate action'}</strong>
           <p>{action?.reason ?? 'This opportunity is closed.'}</p>
+          {lead.status === LeadStatus.Lost ? <button type="button" onClick={() => run(() => service.reopenOpportunity(businessId, lead.id), 'Opportunity reopened for the returning customer.')}>Reopen opportunity</button> : null}
         </Card>
         <Card title="Consent">
           <p>Marketing: {consent?.marketingAllowed && !consent.optedOut ? 'allowed' : 'blocked'}</p>
           <button type="button" disabled={consent?.optedOut} onClick={() => run(() => service.optOutMarketing(businessId, contact.id), 'Marketing opt-out saved.')}>Opt out</button>
+        </Card>
+        <Card title="Commercial journey">
+          <dl>
+            <dt>Journey</dt><dd>{readable(lead.workflowType)}</dd>
+            <dt>Phase</dt><dd>{opportunity ? readable(opportunity.stage) : '—'}</dd>
+            <dt>Service</dt><dd>{selectedService?.name ?? 'Not selected'}</dd>
+            <dt>Total</dt><dd>{opportunity?.totalCents === null || opportunity?.totalCents === undefined ? 'Not validated' : formatMoney(opportunity.totalCents, business?.currency ?? 'ILS')}</dd>
+            <dt>Collected</dt><dd>{formatMoney(opportunity?.collectedCents ?? 0, business?.currency ?? 'ILS')}</dd>
+            <dt>Remaining</dt><dd>{opportunity?.remainingBalanceCents === null || opportunity?.remainingBalanceCents === undefined ? '—' : formatMoney(opportunity.remainingBalanceCents, business?.currency ?? 'ILS')}</dd>
+          </dl>
+        </Card>
+      </div>
+
+      <div className="two-column">
+        <Card title="Known facts">
+          {memory.length === 0 ? <Empty>No structured facts yet.</Empty> : <dl>{memory.map((fact) => <div key={fact.id}><dt>{readable(fact.key)}</dt><dd>{String(fact.value)}</dd></div>)}</dl>}
+        </Card>
+        <Card title="Work and payments">
+          <p>Appointment: {appointment ? readable(appointment.status) : '—'}</p>
+          <p>Quote: {quote ? `${readable(quote.status)} · ${formatMoney(quote.totalCents, business?.currency ?? 'ILS')}` : '—'}</p>
+          <p>Job: {job ? readable(job.status) : '—'}</p>
+          <p>Payments: {payments.length}</p>
         </Card>
       </div>
 
@@ -142,6 +175,19 @@ export function CustomerPage() {
           <button type="button" disabled={conversation.mode === ConversationMode.HumanActive || conversation.mode === ConversationMode.Closed} onClick={() => run(() => service.startHumanTakeover(businessId, conversation.id, HandoffReason.Manual, 'Owner manually took over.'), 'Automation stopped; human takeover is active.')}>Start Human Takeover</button>
           <button type="button" disabled={conversation.mode === ConversationMode.AiActive || conversation.mode === ConversationMode.Closed} onClick={() => run(() => service.resumeAssistant(businessId, conversation.id), 'Assistant mode explicitly resumed.')}>Resume AI</button>
         </div>
+      </Card>
+
+      <Card title="Activity">
+        {activities.length === 0 ? <Empty>No journey activity yet.</Empty> : (
+          <ol className="timeline">
+            {activities.map((activity) => (
+              <li key={activity.id}>
+                <strong>{activity.summary}</strong><br />
+                <small>{new Date(activity.occurredAt).toLocaleString()} · {readable(activity.type)}</small>
+              </li>
+            ))}
+          </ol>
+        )}
       </Card>
     </Page>
   );

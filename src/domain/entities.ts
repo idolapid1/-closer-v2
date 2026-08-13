@@ -113,6 +113,16 @@ export interface Lead extends TenantEntity {
   serviceId: string | null;
   nextActionId: string | null;
   closedAt: string | null;
+  lostReason: OpportunityLostReason | null;
+}
+
+export enum OpportunityLostReason {
+  CustomerDeclined = 'CUSTOMER_DECLINED',
+  Cancelled = 'CANCELLED',
+  OutsideServiceArea = 'OUTSIDE_SERVICE_AREA',
+  NoLongerInterested = 'NO_LONGER_INTERESTED',
+  QuoteExpired = 'QUOTE_EXPIRED',
+  Unavailable = 'UNAVAILABLE',
 }
 
 export enum ConversationChannel {
@@ -242,6 +252,8 @@ export enum NextActionType {
   CollectBalance = 'COLLECT_BALANCE',
   HumanReview = 'HUMAN_REVIEW',
   FutureReactivation = 'FUTURE_REACTIVATION',
+  SendQuote = 'SEND_QUOTE',
+  ServiceScheduled = 'SERVICE_SCHEDULED',
 }
 
 export enum NextActionStatus {
@@ -276,6 +288,27 @@ export enum ActivityType {
   FollowUpScheduled = 'FOLLOW_UP_SCHEDULED',
   FollowUpCancelled = 'FOLLOW_UP_CANCELLED',
   AssistantToolRequested = 'ASSISTANT_TOOL_REQUESTED',
+  AppointmentCreated = 'APPOINTMENT_CREATED',
+  AppointmentRescheduled = 'APPOINTMENT_RESCHEDULED',
+  AppointmentConfirmed = 'APPOINTMENT_CONFIRMED',
+  AppointmentCompleted = 'APPOINTMENT_COMPLETED',
+  AppointmentCancelled = 'APPOINTMENT_CANCELLED',
+  QuoteCreated = 'QUOTE_CREATED',
+  QuoteSent = 'QUOTE_SENT',
+  QuoteAccepted = 'QUOTE_ACCEPTED',
+  QuoteDeclined = 'QUOTE_DECLINED',
+  QuoteExpired = 'QUOTE_EXPIRED',
+  JobCreated = 'JOB_CREATED',
+  JobScheduled = 'JOB_SCHEDULED',
+  JobRescheduled = 'JOB_RESCHEDULED',
+  JobCompleted = 'JOB_COMPLETED',
+  JobCancelled = 'JOB_CANCELLED',
+  DepositCollected = 'DEPOSIT_COLLECTED',
+  BalanceCollected = 'BALANCE_COLLECTED',
+  RefundRecorded = 'REFUND_RECORDED',
+  OpportunityWon = 'OPPORTUNITY_WON',
+  OpportunityLost = 'OPPORTUNITY_LOST',
+  OpportunityReopened = 'OPPORTUNITY_REOPENED',
 }
 
 export interface Activity extends TenantEntity {
@@ -284,6 +317,8 @@ export interface Activity extends TenantEntity {
   type: ActivityType;
   summary: string;
   metadata: Record<string, string | number | boolean | null>;
+  occurredAt: string;
+  operationKey: string | null;
 }
 
 export interface Service extends TenantEntity {
@@ -293,6 +328,7 @@ export interface Service extends TenantEntity {
   fixedPriceCents: number | null;
   active: boolean;
   requiresDeposit: boolean;
+  workflowType: WorkflowType;
 }
 
 export enum AppointmentStatus {
@@ -315,6 +351,7 @@ export interface Appointment extends TenantEntity {
   depositRequiredCents: number;
   confirmedAt: string | null;
   completedAt: string | null;
+  operationKey: string;
 }
 
 export enum Weekday {
@@ -364,6 +401,7 @@ export interface Quote extends TenantEntity {
   status: QuoteStatus;
   expiresAt: string | null;
   acceptedAt: string | null;
+  operationKey: string;
 }
 
 export enum JobStatus {
@@ -387,6 +425,7 @@ export interface Job extends TenantEntity {
   totalCents: number;
   depositRequiredCents: number;
   completedAt: string | null;
+  operationKey: string;
 }
 
 export enum PaymentKind {

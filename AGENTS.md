@@ -4,6 +4,7 @@
 
 - Keep CLOSER action-first and WhatsApp-first.
 - Every active opportunity has exactly one current pending NextAction.
+- Reconcile opportunity phase and action after every validated commercial mutation; derive totals and balances from appointments/quotes/jobs/payments.
 - Keep potential, booked, completed, collected, and refunded financially distinct.
 - Scope knowledge, memory, context, and every repository operation by `businessId`.
 - Human Takeover disables customer-facing automation and follow-ups until explicit Resume AI.
@@ -18,6 +19,15 @@
 - Level 3 actions are proposals. Validate tenant, state, required fields, idempotency, financial rules, and scheduling before execution.
 - Unknown prices, policies, slots, payment claims, conflicting facts, low confidence, sensitive topics, and permission mismatches fail closed or hand off.
 - Do not persist unrestricted free-form memory; use normalized `CustomerMemoryItem` facts with source metadata.
+
+## Commercial journey boundary
+
+- Keep `Lead` as the commercial opportunity; do not introduce a competing CRM record.
+- Use service `workflowType` to select appointment versus quote/job behavior; never branch on business name.
+- `CommercialJourneyService` is read/decision logic. `CloserService` validates and applies mutations.
+- A completed appointment/job closes won only when its remaining balance is zero.
+- A valid refund that creates a balance reopens the won opportunity and restores a payment action/follow-up.
+- Business event operation keys, provider message IDs, payment keys, and revenue causation IDs must remain idempotent.
 
 ## Change workflow
 

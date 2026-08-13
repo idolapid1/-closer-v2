@@ -18,4 +18,6 @@ The provider proposes; `AssistantDecisionPolicy` validates. `AssistantToolExecut
 
 Each inbound provider message ID is idempotent. Repeated delivery returns the existing decision and cannot duplicate messages, memory, actions, follow-ups, handoffs, or provider sends. A reused ID with different content fails.
 
+After validated conversation/memory changes, commercial reconciliation preserves the same active lead and updates its derived stage/action. Human Takeover still wins over commercial recommendations. Explicit Resume AI re-infers the stage from current appointment/quote/job/payment truth.
+
 See [Assistant Safety](ASSISTANT_SAFETY.md), [Assistant Tools](ASSISTANT_TOOLS.md), and [Conversation Scenarios](CONVERSATION_SCENARIOS.md).
