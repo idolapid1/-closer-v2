@@ -1,4 +1,6 @@
-# Product UX
+# Product UX — Phase 4 implementation record
+
+> **Status:** This document records the verified Phase 4 interface as implemented. It is not the approved future product hierarchy or final visual direction. [CLOSER Product Bible](PRODUCT_BIBLE.md) is authoritative: Today / Command Center leads the product, Customers / Opportunities carry the commercial story, and Inbox becomes contextual rather than product-defining. A new direction must begin with one owner-reviewed prototype before propagation.
 
 Phase 4 gives CLOSER a production product layer around three questions a service-business owner asks repeatedly: what needs attention, who is waiting, and what is happening with this customer. The interface is Hebrew-first, action-first, and intentionally avoids CRM and AI terminology.
 

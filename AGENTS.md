@@ -2,7 +2,9 @@
 
 ## Product invariants
 
-- Keep CLOSER action-first and WhatsApp-first.
+- Treat [`docs/PRODUCT_BIBLE.md`](docs/PRODUCT_BIBLE.md) as the authoritative product direction.
+- Keep CLOSER lead-to-cash and action-first. WhatsApp is an important initial connector, not the product center.
+- Prioritize work that moves a customer toward collected revenue or reduces owner effort along that journey.
 - Every active opportunity has exactly one current pending NextAction.
 - Reconcile opportunity phase and action after every validated commercial mutation; derive totals and balances from appointments/quotes/jobs/payments.
 - Keep potential, booked, completed, collected, and refunded financially distinct.
@@ -37,4 +39,4 @@
 4. Perform an adversarial review when assistant permissions, knowledge, memory, consent, follow-up, payments, or scheduling change.
 5. Update the relevant concise document under `docs/`.
 
-Prefer focused application services over expanding `CloserService` or creating generic frameworks. Avoid dashboards, generic CRM abstractions, workflow builders, production integrations, and terminology a service-business owner should not need.
+Prefer focused application services over expanding `CloserService` or creating generic frameworks. Avoid KPI walls, generic CRM abstractions, workflow builders, premature production integrations, and terminology a service-business owner should not need.

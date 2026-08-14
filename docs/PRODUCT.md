@@ -1,19 +1,22 @@
 # Product
 
-CLOSER receives customer inquiries, helps answer them using verified business knowledge, and keeps each customer moving toward an appointment or accepted job and then payment.
+The authoritative product direction is [CLOSER Product Bible](PRODUCT_BIBLE.md).
 
-The owner-facing model is intentionally small:
+CLOSER is a **lead-to-cash autopilot for service businesses**. It takes every inquiry and continuously moves it toward the next best validated business action until the customer books or approves, receives the service, and pays.
 
-- a customer conversation;
-- one next action;
-- an appointment or quote/job;
-- deposits and remaining balance;
-- human control whenever automation should stop.
+The owner-facing product should answer what needs attention, what is happening today, which opportunities are stuck or ready to close, who owes money, and what CLOSER has already handled. Conversation is important evidence and context, but it does not define the product.
 
-Phase 3 supports one configurable product with `APPOINTMENT_SERVICE` and `QUOTE_JOB` commercial journeys. Three fictional tenants demonstrate clinic, auto-detailing, and home-services qualification, tone, knowledge, scheduling, deposits, completion, collection, recovery, and follow-up behavior. The assistant remains outcome-oriented and tenant-safe; validated domain state now reconciles the full customer journey. The UI remains an internal test surface, not the product design.
+The product remains one configurable, multi-tenant system with two commercial journey families:
 
-The core promise is: “CLOSER handles customer inquiries, tells you who needs attention, and helps move every customer from first message to payment.”
+- `APPOINTMENT_SERVICE`: inquiry through appointment, completion, and collection;
+- `QUOTE_JOB`: inquiry through quote, job, completion, and collection.
+
+Clinic, auto-detailing/PPF, and home-services behavior must come from business and service configuration rather than separate applications. Auto detailing/PPF is the leading first-pilot candidate.
+
+AI remains a constrained reasoning and recommendation layer. It may extract facts, answer verified knowledge, collect information, request validated tools, and hand off; it is not the system of record and cannot establish payment, price, booking, tenant ownership, or other commercial truth by assertion.
+
+The verified Phase 1–4 domain, application, safety, persistence, and idempotency boundaries remain intact. Phase 4.1A changes product direction documentation only.
 
 ## Deliberate exclusions
 
-No production integrations, final visual design, dashboard metrics, attribution, weighted revenue, workflow builder, background worker, advanced calendar, payment gateway, live AI, mobile app, accounting, inventory, or marketing site is included.
+No production integrations, owner-approved final visual design, backend, authentication, background worker, payment gateway, live AI, native mobile app, accounting suite, workflow builder, complex analytics, or marketing site is included.

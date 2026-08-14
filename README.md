@@ -1,6 +1,8 @@
-# CLOSER v2 — Phase 4
+# CLOSER v2 — Phase 4.1A
 
-CLOSER is a revenue and customer-conversation operating system for service businesses. Phase 4 adds a production-grade, Hebrew-first product experience for Today, Inbox, and Customer Workspace on top of the verified inquiry-to-collection architecture.
+CLOSER is a **lead-to-cash autopilot for service businesses**: it moves every inquiry toward the next best validated action until the customer books or approves, completes the service, and pays. The authoritative direction is the [CLOSER Product Bible](docs/PRODUCT_BIBLE.md).
+
+Phase 4.1A resets product hierarchy and future experience direction in documentation only. The verified Phase 4 Hebrew-first Today, Inbox, and Customer Workspace implementation remains intact as a technical baseline, but its visual language is not the owner-approved final production direction.
 
 This is an internal, local-only engineering build. It uses fictional data, deterministic mock AI and messaging providers, and versioned browser storage. It connects to no external API and contains no secrets.
 
@@ -31,7 +33,7 @@ npm audit
 
 `npm run verify` runs lint, strict TypeScript checking, all Vitest tests, and the production build in sequence.
 
-## Product routes
+## Implemented Phase 4 routes
 
 - `/actions` — Hebrew-first Today view: attention, today’s commitments, and real outstanding balances
 - `/inbox` — split-view business inbox with contextual recommendation and explicit Human Takeover state
@@ -50,7 +52,7 @@ Domain entities and rules are pure TypeScript. `CloserService` is the mutation b
 
 The AI provider is untrusted and has no repository, network, clock, or mutation access. The application reconstructs auto-sent Level 1/2 replies from validated knowledge/tool results. Appointment, quote, deposit, payment, and scheduling changes are proposals until the existing application use cases validate them. React never accesses `localStorage` or implements business rules.
 
-See [Architecture](docs/ARCHITECTURE.md), [Product UX](docs/PRODUCT_UX.md), [Design System](docs/DESIGN_SYSTEM.md), [Conversation Engine](docs/CONVERSATION_ENGINE.md), [Assistant Safety](docs/ASSISTANT_SAFETY.md), [Assistant Tools](docs/ASSISTANT_TOOLS.md), and [Financial Rules](docs/FINANCIAL_RULES.md).
+See [Product Bible](docs/PRODUCT_BIBLE.md), [Architecture](docs/ARCHITECTURE.md), [Product UX history](docs/PRODUCT_UX.md), [Phase 4 design-system history](docs/DESIGN_SYSTEM.md), [Conversation Engine](docs/CONVERSATION_ENGINE.md), [Assistant Safety](docs/ASSISTANT_SAFETY.md), [Assistant Tools](docs/ASSISTANT_TOOLS.md), and [Financial Rules](docs/FINANCIAL_RULES.md).
 
 ## Local data
 
@@ -70,6 +72,6 @@ Never commit `.env` files, credentials, tokens, customer exports, or production 
 
 ## Deliberate exclusions
 
-Phase 4 does not include production AI, real WhatsApp/Meta/Instagram, a backend, authentication, background workers, calendar/payment integrations, deployment, or redesigns for the engineering appointment, quote/job, and debug modules. Follow-ups are inspectable scheduled records, not timers. Payments and refunds are validated manual records, not gateway transactions.
+The current build does not include production AI, real WhatsApp/Meta/Instagram, a backend, authentication, background workers, calendar/payment integrations, deployment, or redesigns for the engineering appointment, quote/job, and debug modules. Follow-ups are inspectable scheduled records, not timers. Payments and refunds are validated manual records, not gateway transactions.
 
 See [Commercial journey](docs/COMMERCIAL_JOURNEY.md) for reconciliation, closing, recovery, idempotency, action, and activity rules.

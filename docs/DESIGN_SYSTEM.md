@@ -1,4 +1,6 @@
-# Design system
+# Design system — Phase 4 implementation record
+
+> **Status:** These tokens and components document the technically verified Phase 4 UI. They remain useful implementation evidence but are not an owner-approved final production direction and must not be propagated by default. The future experience and approval gate are defined by the [CLOSER Product Bible](PRODUCT_BIBLE.md).
 
 Phase 4 introduces a restrained production presentation system for the three core product experiences. Its visual direction is calm and operational: graphite navigation, crisp light working surfaces, one indigo action accent, and hierarchy created primarily with typography, spacing, and separators.
 
