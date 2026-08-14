@@ -22,6 +22,27 @@ const COMPLETED_CONTACT = `${CLINIC}-contact-completed`;
 const COMPLETED_APPOINTMENT = `${CLINIC}-appointment-completed`;
 
 describe('ProductReadService', () => {
+  it('prioritizes human review and reports only tenant-scoped prepared automation work', () => {
+    const { service, database } = createHarness();
+    const today = service.productToday(CLINIC);
+    const expectedPreparedActions = database.repositories.leads
+      .list(CLINIC)
+      .filter((lead) =>
+        [LeadStatus.New, LeadStatus.Active, LeadStatus.Qualified].includes(lead.status),
+      )
+      .filter((lead) => {
+        const action = lead.nextActionId
+          ? database.repositories.nextActions.get(CLINIC, lead.nextActionId)
+          : null;
+        return action?.automatic === true;
+      }).length;
+
+    expect(today.attention[0]?.actionType).toBe(NextActionType.HumanReview);
+    expect(today.asOf).toBe('2026-08-12T12:00:00.000Z');
+    expect(today.automation.preparedActions).toBe(expectedPreparedActions);
+    expect(today.automation.preparedActions).toBeGreaterThan(0);
+  });
+
   it('projects operational and marketing consent independently and fails closed', () => {
     const { service, database } = createHarness();
     const consent = database.repositories.consentRecords.get(

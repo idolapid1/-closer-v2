@@ -1,16 +1,14 @@
-# Recommended Phase 4.1B
+# Phase 4.1B approval gate
 
-The authoritative sequence is defined in the [CLOSER Product Bible](PRODUCT_BIBLE.md). The immediate next step is **one new Home / Command Center prototype**, not backend work and not propagation across the application.
+The authoritative sequence is defined in the [CLOSER Product Bible](PRODUCT_BIBLE.md). One new Home / Command Center prototype is implemented and verified. It remains unapproved until the product owner reviews the real desktop and mobile render.
 
-Phase 4.1B should:
+The product owner should now decide whether this direction:
 
-1. translate the Lead-to-Cash hierarchy into one representative Today / Command Center screen;
-2. show what needs the owner, what happens today, which customers are stuck or ready to close, who owes money, and a quiet proof of work CLOSER handled;
-3. explore the Neo Luxury Command Center direction on realistic Hebrew data;
-4. test the same screen at real desktop and mobile sizes;
-5. preserve the verified application/domain architecture and use existing commercial truth; and
-6. stop for explicit product-owner visual approval before the design language is propagated.
+1. makes CLOSER feel like an active lead-to-cash operator rather than an inbox or CRM;
+2. makes the owner decision count and first action obvious within five seconds;
+3. feels sufficiently premium without sacrificing Hebrew clarity or operational trust; and
+4. should be approved, revised, or rejected before any propagation.
 
-It must not redesign Inbox or Customer Workspace, add product functionality, implement backend/integrations, or declare the direction approved on the owner's behalf.
+Until that decision, do not redesign Inbox or Customer Workspace, add product functionality, implement backend/integrations, or declare the direction approved on the owner's behalf.
 
 After approval, propagate the production UX system. Then establish backend/authentication and the server tenant boundary, durable persistence/event ingestion, WhatsApp integration, real AI in shadow mode, evaluation gates, limited autopilot, integrations, and a focused pilot in the staged order described by the Product Bible.

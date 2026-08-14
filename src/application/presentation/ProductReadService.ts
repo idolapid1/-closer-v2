@@ -1,5 +1,6 @@
 import {
   AppointmentStatus,
+  ConversationStage,
   ConversationMode,
   JobStatus,
   LeadStatus,
@@ -21,6 +22,8 @@ import { productServiceName } from './productCopy';
 export interface ProductActionView extends ActionCenterItem {
   missingInformation: string[];
   isHumanReview: boolean;
+  automatic: boolean;
+  serviceName: string | null;
 }
 
 export interface ProductCommitmentView {
@@ -30,12 +33,22 @@ export interface ProductCommitmentView {
   serviceName: string;
   startsAt: string;
   kind: 'APPOINTMENT' | 'JOB';
+  depositPaid: boolean;
+}
+
+export interface ProductAutomationProofView {
+  preparedActions: number;
+  informationCollected: number;
+  progressedCustomers: number;
 }
 
 export interface ProductTodayView {
+  asOf: string;
   attention: ProductActionView[];
   payments: ProductActionView[];
   commitments: ProductCommitmentView[];
+  activeOpportunityCount: number;
+  automation: ProductAutomationProofView;
 }
 
 export interface ProductMessageView {
@@ -156,18 +169,30 @@ export class ProductReadService {
 
   today(businessId: string): ProductTodayView {
     const repositories = this.database.repositories;
+    const asOf = this.now();
     const business = repositories.businesses.get(businessId, businessId);
     const services = repositories.services.list(businessId);
+    const activeLeads = repositories.leads.list(businessId).filter((lead) => isOpenLead(lead.status));
+    const activeContactIds = new Set(activeLeads.map((lead) => lead.contactId));
     const actions = this.actionCenter(businessId).map((action) => {
       const conversation = repositories.conversations.get(businessId, action.conversationId);
+      const lead = repositories.leads.get(businessId, action.leadId);
+      const nextAction = repositories.nextActions.get(businessId, action.id);
+      const service = lead?.serviceId ? repositories.services.get(businessId, lead.serviceId) : null;
       return {
         ...action,
         missingInformation: conversation?.missingInformation ?? [],
         isHumanReview: action.actionType === NextActionType.HumanReview,
+        automatic: nextAction?.automatic ?? false,
+        serviceName: service
+          ? business
+            ? productServiceName(business.kind, service.id, service.name)
+            : service.name
+          : null,
       };
     });
     const timeZone = business?.timeZone ?? 'Asia/Jerusalem';
-    const todayKey = calendarKey(this.now(), timeZone);
+    const todayKey = calendarKey(asOf, timeZone);
     const contacts = repositories.contacts.list(businessId);
     const commitments: ProductCommitmentView[] = [
       ...repositories.appointments
@@ -179,6 +204,7 @@ export class ProductReadService {
         )
         .map((appointment) => {
           const service = services.find((candidate) => candidate.id === appointment.serviceId);
+          const opportunity = this.commercialJourney.evaluate(businessId, appointment.leadId).opportunity;
           return {
             id: appointment.id,
             contactId: appointment.contactId,
@@ -190,6 +216,9 @@ export class ProductReadService {
               : 'פגישה',
             startsAt: appointment.startAt,
             kind: 'APPOINTMENT' as const,
+            depositPaid:
+              appointment.depositRequiredCents > 0 &&
+              opportunity.collectedCents >= appointment.depositRequiredCents,
           };
         }),
       ...repositories.jobs
@@ -206,6 +235,7 @@ export class ProductReadService {
           const service = lead?.serviceId
             ? repositories.services.get(businessId, lead.serviceId)
             : null;
+          const opportunity = this.commercialJourney.evaluate(businessId, job.leadId).opportunity;
           return {
             id: job.id,
             contactId: job.contactId,
@@ -215,20 +245,58 @@ export class ProductReadService {
                 ? productServiceName(business.kind, service.id, service.name)
                 : service.name
               : quote?.items[0]?.description ?? 'עבודה',
-            startsAt: job.scheduledStartAt ?? this.now(),
+            startsAt: job.scheduledStartAt ?? asOf,
             kind: 'JOB' as const,
+            depositPaid:
+              job.depositRequiredCents > 0 && opportunity.collectedCents >= job.depositRequiredCents,
           };
         }),
     ].sort((first, second) => first.startsAt.localeCompare(second.startsAt));
 
+    const preparedActions = activeLeads.filter((lead) => {
+      const action = lead.nextActionId
+        ? repositories.nextActions.get(businessId, lead.nextActionId)
+        : null;
+      return action?.automatic === true;
+    }).length;
+    const informationCollected = new Set(
+      repositories.customerMemory
+        .list(businessId)
+        .filter((fact) => activeContactIds.has(fact.contactId))
+        .map((fact) => fact.contactId),
+    ).size;
+    const progressedCustomers = activeLeads.filter((lead) => {
+      const stage = this.commercialJourney.evaluate(businessId, lead.id).opportunity.stage;
+      return ![
+        ConversationStage.NewInquiry,
+        ConversationStage.Discovery,
+        ConversationStage.Qualification,
+        ConversationStage.InformationCollection,
+        ConversationStage.HumanReview,
+      ].includes(stage);
+    }).length;
+
     return {
-      attention: actions.filter(
-        (action) =>
-          action.actionType !== NextActionType.CollectBalance &&
-          action.actionType !== NextActionType.ServiceScheduled,
-      ),
+      asOf,
+      attention: actions
+        .filter(
+          (action) =>
+            action.actionType !== NextActionType.CollectBalance &&
+            action.actionType !== NextActionType.ServiceScheduled,
+        )
+        .sort(
+          (first, second) =>
+            Number(second.isHumanReview) - Number(first.isHumanReview) ||
+            (first.dueAt ?? first.createdAt).localeCompare(second.dueAt ?? second.createdAt),
+        ),
       payments: actions.filter((action) => action.actionType === NextActionType.CollectBalance),
       commitments,
+      activeOpportunityCount: activeLeads.length,
+      automation: {
+        preparedActions,
+        informationCollected,
+        progressedCustomers,
+      },
     };
   }
 
@@ -274,6 +342,13 @@ export class ProductReadService {
                 ...action,
                 missingInformation: conversation.missingInformation,
                 isHumanReview: action.actionType === NextActionType.HumanReview,
+                automatic:
+                  repositories.nextActions.get(businessId, action.id)?.automatic ?? false,
+                serviceName: service
+                  ? business
+                    ? productServiceName(business.kind, service.id, service.name)
+                    : service.name
+                  : null,
               }
             : null,
           lastMessage: messages.at(-1) ?? null,
@@ -364,6 +439,16 @@ export class ProductReadService {
             ...action,
             missingInformation: conversation.missingInformation,
             isHumanReview: action.actionType === NextActionType.HumanReview,
+            automatic: repositories.nextActions.get(businessId, action.id)?.automatic ?? false,
+            serviceName: displayServiceId
+              ? business
+                ? productServiceName(
+                    business.kind,
+                    displayServiceId,
+                    repositories.services.get(businessId, displayServiceId)?.name,
+                  )
+                : repositories.services.get(businessId, displayServiceId)?.name ?? null
+              : null,
           }
         : null,
       totalCents: opportunity.totalCents,

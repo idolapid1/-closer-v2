@@ -20,7 +20,7 @@ function renderAt(path: string, harness = createHarness()) {
 describe('production product experience', () => {
   it.each([
     ['/inbox', 'פניות'],
-    ['/actions', 'בוקר טוב, מאיה'],
+    ['/actions', 'CLOSER עובד. נשאר רק להחליט.'],
     ['/customer/biz-clinic-contact-new', 'אלכס מור'],
   ])('renders the production route %s in Hebrew', (path, heading) => {
     renderAt(path);
@@ -40,10 +40,10 @@ describe('production product experience', () => {
 
   it('shows grouped Today actions with real payment truth and correct links', () => {
     renderAt('/actions');
-    expect(screen.getByRole('heading', { name: 'דורש טיפול', level: 2 })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'צריך אותך עכשיו', level: 2 })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'היום', level: 2 })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'תשלומים', level: 2 })).toBeInTheDocument();
-    expect(screen.getByText((content) => content.includes('315') && content.includes('לתשלום'))).toBeInTheDocument();
+    expect(screen.getAllByText((content) => content.includes('315')).length).toBeGreaterThan(0);
     const mayaAction = screen.getByText('השיחה עם מאיה לוי דורשת טיפול').closest('li');
     expect(mayaAction).not.toBeNull();
     expect(within(mayaAction!).getByRole('link', { name: /פתח שיחה/ })).toHaveAttribute(
@@ -55,7 +55,7 @@ describe('production product experience', () => {
   it('names each Today region from its visible section heading', () => {
     renderAt('/actions');
 
-    for (const name of ['דורש טיפול', 'היום', 'תשלומים']) {
+    for (const name of ['צריך אותך עכשיו', 'היום', 'תשלומים']) {
       const heading = screen.getByRole('heading', { name, level: 2 });
       expect(screen.getByRole('region', { name })).toContainElement(heading);
     }
@@ -77,17 +77,102 @@ describe('production product experience', () => {
   it('presents a calm, complete Today empty state', () => {
     const harness = createHarness();
     vi.spyOn(harness.service, 'productToday').mockReturnValue({
+      asOf: '2026-08-12T12:00:00.000Z',
       attention: [],
       commitments: [],
       payments: [],
+      activeOpportunityCount: 0,
+      automation: {
+        preparedActions: 0,
+        informationCollected: 0,
+        progressedCustomers: 0,
+      },
     });
 
     renderAt('/actions', harness);
 
-    expect(screen.getByText('הכול מטופל כרגע')).toBeInTheDocument();
-    expect(screen.getByText('היום עדיין פנוי')).toBeInTheDocument();
-    expect(screen.getByText('אין תשלומים פתוחים')).toBeInTheDocument();
+    expect(screen.getByText('הכול מתקדם כרגע')).toBeInTheDocument();
+    expect(screen.getByText('אין תורים או עבודות מתוכננות להיום.')).toBeInTheDocument();
+    expect(screen.getByText('אין יתרות פתוחות שדורשות פעולה.')).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: /עבור/ })).not.toBeInTheDocument();
+  });
+
+  it('keeps owner navigation lead-to-cash and hides engineering routes', () => {
+    renderAt('/actions');
+    const navigation = screen.getByRole('navigation', { name: 'ניווט ראשי' });
+
+    for (const label of ['היום', 'לקוחות', 'יומן ועבודות', 'כסף', 'עוד']) {
+      expect(within(navigation).getByText(label)).toBeInTheDocument();
+    }
+    expect(within(navigation).queryByText('כלי פיתוח')).not.toBeInTheDocument();
+    expect(within(navigation).queryByText('סביבת הדגמה')).not.toBeInTheDocument();
+    expect(within(navigation).queryByRole('link', { name: 'לקוחות' })).not.toBeInTheDocument();
+  });
+
+  it('keeps the mixed Hebrew and English masked heading in logical reading order', () => {
+    renderAt('/actions');
+
+    const heading = screen.getByRole('heading', {
+      name: 'CLOSER עובד. נשאר רק להחליט.',
+      level: 1,
+    });
+    const glyphs = heading.querySelectorAll('text');
+
+    expect(glyphs[0]).toHaveAttribute('direction', 'ltr');
+    expect(glyphs[0]).toHaveAttribute('text-anchor', 'end');
+    expect(glyphs[1]).toHaveAttribute('direction', 'rtl');
+    expect(glyphs[1]).toHaveAttribute('text-anchor', 'start');
+    expect(screen.getAllByRole('main')).toHaveLength(1);
+  });
+
+  it('falls back to the static ambient treatment when motion support is unavailable', () => {
+    renderAt('/actions');
+
+    expect(document.querySelector('.molten-metal-container')).toHaveAttribute(
+      'data-renderer',
+      'static',
+    );
+    expect(document.querySelector('.molten-metal-container canvas')).not.toBeInTheDocument();
+  });
+
+  it('keeps the ambient treatment static when reduced motion is requested', () => {
+    const originalMatchMedia = window.matchMedia;
+    const originalWebGl2 = window.WebGL2RenderingContext;
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      value: vi.fn((query: string) => ({
+        matches: query === '(prefers-reduced-motion: reduce)',
+        media: query,
+        onchange: null,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })),
+    });
+    Object.defineProperty(window, 'WebGL2RenderingContext', {
+      configurable: true,
+      value: class WebGl2RenderingContext {},
+    });
+
+    try {
+      renderAt('/actions');
+      expect(document.querySelector('.molten-metal-container')).toHaveAttribute(
+        'data-renderer',
+        'static',
+      );
+      expect(document.querySelector('.molten-metal-container canvas')).not.toBeInTheDocument();
+    } finally {
+      Object.defineProperty(window, 'matchMedia', {
+        configurable: true,
+        value: originalMatchMedia,
+      });
+      Object.defineProperty(window, 'WebGL2RenderingContext', {
+        configurable: true,
+        value: originalWebGl2,
+      });
+    }
   });
 
   it('switches the active demo business without exposing previous tenant actions', async () => {

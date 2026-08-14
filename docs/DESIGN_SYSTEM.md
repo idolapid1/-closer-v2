@@ -1,5 +1,18 @@
 # Design system — Phase 4 implementation record
 
+## Phase 4.1B prototype layer
+
+The Command Center tests a new, isolated visual language on `/actions` only. It is not yet a production design system and must not be propagated before explicit owner approval.
+
+- **Environment:** near-black `#07080d`, graphite/deep-navy surfaces, and rare indigo/violet illumination.
+- **Identity:** one semantic Hebrew/English `MaskedHeading` filled with an original liquid-metal material. RTL words use SVG `direction="rtl"` with `text-anchor="start"`; Latin words remain LTR with `text-anchor="end"`.
+- **Ambient motion:** one decorative `MoltenMetal` WebGL 2 layer. It pauses offscreen and when the page is hidden, caps desktop DPR, lowers mobile detail/glow/opacity, disables mobile pointer response and grain, and falls back to a static material for reduced motion or missing WebGL 2.
+- **Actions:** an original CLOSER card family with a small status signal, customer/service identity, business reason, one structured truth band, and one primary action. Card 1 influenced only the composed object and framed information concept; no proprietary code was used.
+- **Responsive order:** identity and operating state → owner decision count → top action → remaining queue → Today → Money → prepared automation proof. Mobile uses native-width stacking and the existing bottom-navigation boundary rather than shrinking desktop.
+- **Accessibility:** semantic headings and regions, one page-level main landmark, native links/selects, customer-specific action names, visible focus, text-plus-color states, 44px mobile actions, decorative shaders hidden from assistive technology, and reduced-motion fallback.
+
+The prototype styles are intentionally scoped through `.command-center-shell` and `.command-*` selectors. The supplied visual components keep their own focused stylesheets. Unused prototype tokens were removed; the three existing breakpoints remain ordered at 1120, 820, and 520 pixels.
+
 > **Status:** These tokens and components document the technically verified Phase 4 UI. They remain useful implementation evidence but are not an owner-approved final production direction and must not be propagated by default. The future experience and approval gate are defined by the [CLOSER Product Bible](PRODUCT_BIBLE.md).
 
 Phase 4 introduces a restrained production presentation system for the three core product experiences. Its visual direction is calm and operational: graphite navigation, crisp light working surfaces, one indigo action accent, and hierarchy created primarily with typography, spacing, and separators.

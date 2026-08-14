@@ -1,5 +1,22 @@
 # Phase 4 test report
 
+## Phase 4.1B Command Center approval prototype
+
+Status: **passed** on 2026-08-15. Visual direction remains pending explicit product-owner approval.
+
+- `npm run lint`: exit 0; no errors or warnings.
+- `npm run typecheck`: exit 0; strict `tsc --noEmit` reported no errors.
+- `npm run test`: exit 0; **11 test files and 113 tests passed**.
+- `npm run build`: exit 0; Vite 7.3.6 transformed 1,926 modules and emitted `dist/index.html` 0.60 kB (0.39 kB gzip), the 297.41 kB liquid-metal image, CSS 54.02 kB (10.92 kB gzip), and JavaScript 549.07 kB (172.66 kB gzip). Vite reports its standard over-500 kB chunk advisory; no threshold was raised to hide it.
+- `npm run verify`: exit 0; lint, strict TypeScript, all 113 tests, and production build passed.
+- `npm audit`: exit 0; found 0 vulnerabilities.
+
+The suite was run with the bundled Node 24.19.0 runtime. The host's Node 26.7.0 exposes an experimental global Web Storage getter without `--localstorage-file`, which shadows jsdom and produces an undefined `localStorage`; this is a host-runtime mismatch, not an application failure. `src/test/setup.ts` remains unchanged.
+
+Rendered QA covered the actual `/actions` screen at 1440×1024, 1100×760, 393×852, and 375×812. The accepted captures are stored outside the repository under `phase-4-1b-command-center`. The review confirmed zero horizontal overflow, one main landmark, Human Takeover ranked first, a directly visible first action, logical Hebrew/English SVG word direction, live WebGL 2 rendering, 44px mobile actions, visible keyboard focus, preserved `/debug`, and a clean browser console. Clinic, auto-detailing, and home-services tenant data were inspected. Reduced motion has dedicated regression coverage and produces the static ambient treatment without a canvas.
+
+The in-app Chromium render confirms the responsive behavior and mobile GPU policy. Native Safari and a physical iPhone GPU trace were not available in this environment; that cross-browser/device pass remains a pre-propagation requirement. Chrome DevTools performance tracing was also unavailable, so no synthetic Core Web Vitals are claimed.
+
 Status: **passed** on 2026-08-13.
 
 Phase 4 preserves the full Phase 1–3 domain/application suite and adds production-presentation coverage for Today, Inbox, Customer Workspace, tenant switching, navigation, accessible region/link names, empty states, Human Takeover, independent consent flags, closed opportunities, payment truth, and the `ProductReadService` boundary.

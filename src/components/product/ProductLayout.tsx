@@ -1,14 +1,13 @@
 import {
+  Banknote,
+  BriefcaseBusiness,
   CalendarDays,
   ChevronDown,
   CircleEllipsis,
   Clock3,
-  Code2,
-  FileText,
   Home,
-  MessageCircleMore,
+  Sparkles,
   UsersRound,
-  Wrench,
 } from 'lucide-react';
 import { useEffect, useRef } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
@@ -17,14 +16,10 @@ import { useCloser } from '../../state/closerState';
 
 const primaryLinks = [
   { to: '/actions', label: 'היום', icon: Home },
-  { to: '/inbox', label: 'פניות', icon: MessageCircleMore },
-] as const;
-
-const internalLinks = [
-  { to: '/demo', label: 'לקוחות', icon: UsersRound },
-  { to: '/appointments', label: 'תורים', icon: CalendarDays },
-  { to: '/quotes', label: 'הצעות ועבודות', icon: FileText },
-  { to: '/debug', label: 'כלי פיתוח', icon: Code2 },
+  { to: null, label: 'לקוחות', icon: UsersRound },
+  { to: null, label: 'יומן ועבודות', icon: CalendarDays },
+  { to: null, label: 'כסף', icon: Banknote },
+  { to: null, label: 'עוד', icon: CircleEllipsis },
 ] as const;
 
 export function ProductLayout() {
@@ -32,6 +27,7 @@ export function ProductLayout() {
   const business = state.businesses.find((candidate) => candidate.id === businessId);
   const location = useLocation();
   const mainRef = useRef<HTMLElement>(null);
+  const isCommandCenter = location.pathname === '/actions';
 
   useEffect(() => {
     const titles: Record<string, string> = {
@@ -46,33 +42,35 @@ export function ProductLayout() {
   }, [location.pathname]);
 
   return (
-    <div className="product-shell" dir="rtl">
+    <div className={`product-shell${isCommandCenter ? ' command-center-shell' : ''}`} dir="rtl">
       <a className="skip-link" href="#product-main">דלג לתוכן הראשי</a>
       <aside className="product-sidebar">
         <div className="product-brand" aria-label="CLOSER">
           <strong>CLOSER</strong>
         </div>
         <nav className="product-nav" aria-label="ניווט ראשי">
-          {primaryLinks.map(({ to, label, icon: Icon }) => (
-            <NavLink key={to} to={to} className="product-nav-link">
-              <Icon aria-hidden="true" />
-              <span>{label}</span>
-            </NavLink>
-          ))}
-        </nav>
-        <div className="product-nav-divider" />
-        <p className="product-nav-eyebrow">עוד</p>
-        <nav className="product-nav product-nav-secondary" aria-label="כלים פנימיים">
-          {internalLinks.map(({ to, label, icon: Icon }) => (
-            <NavLink key={to} to={to} className="product-nav-link">
-              <Icon aria-hidden="true" />
-              <span>{label}</span>
-            </NavLink>
-          ))}
+          {primaryLinks.map(({ to, label, icon: Icon }) =>
+            to ? (
+              <NavLink key={label} to={to} className="product-nav-link">
+                <Icon aria-hidden="true" />
+                <span>{label}</span>
+              </NavLink>
+            ) : (
+              <span
+                key={label}
+                className="product-nav-link product-nav-link-disabled"
+                aria-disabled="true"
+                title={`${label} — בהמשך`}
+              >
+                <Icon aria-hidden="true" />
+                <span>{label}</span>
+              </span>
+            ),
+          )}
         </nav>
         <div className="product-sidebar-footer">
-          <Wrench aria-hidden="true" />
-          <span>סביבת הדגמה</span>
+          <BriefcaseBusiness aria-hidden="true" />
+          <span>{business ? productBusinessName(business.kind, business.id, business.name) : 'CLOSER'}</span>
         </div>
       </aside>
 
@@ -94,8 +92,8 @@ export function ProductLayout() {
             <ChevronDown aria-hidden="true" />
           </label>
           <div className="product-topbar-meta">
-            <Clock3 aria-hidden="true" />
-            <span>סביבת עבודה מקומית</span>
+            {isCommandCenter ? <Sparkles aria-hidden="true" /> : <Clock3 aria-hidden="true" />}
+            <span>{isCommandCenter ? 'CLOSER פעיל' : 'סביבת עבודה מקומית'}</span>
             <span className="product-topbar-dot" aria-hidden="true" />
             <strong>{business ? productBusinessName(business.kind, business.id, business.name) : 'CLOSER'}</strong>
           </div>
@@ -106,16 +104,23 @@ export function ProductLayout() {
       </div>
 
       <nav className="product-mobile-nav" aria-label="ניווט ראשי לנייד">
-        {primaryLinks.map(({ to, label, icon: Icon }) => (
-          <NavLink key={to} to={to} className="product-mobile-nav-link">
-            <Icon aria-hidden="true" />
-            <span>{label}</span>
-          </NavLink>
-        ))}
-        <NavLink to="/demo" className="product-mobile-nav-link">
-          <CircleEllipsis aria-hidden="true" />
-          <span>עוד</span>
-        </NavLink>
+        {primaryLinks.map(({ to, label, icon: Icon }) =>
+          to ? (
+            <NavLink key={label} to={to} className="product-mobile-nav-link">
+              <Icon aria-hidden="true" />
+              <span>{label}</span>
+            </NavLink>
+          ) : (
+            <span
+              key={label}
+              className="product-mobile-nav-link product-mobile-nav-link-disabled"
+              aria-disabled="true"
+            >
+              <Icon aria-hidden="true" />
+              <span>{label}</span>
+            </span>
+          ),
+        )}
       </nav>
     </div>
   );

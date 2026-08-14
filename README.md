@@ -1,15 +1,17 @@
-# CLOSER v2 — Phase 4.1A
+# CLOSER v2 — Phase 4.1B visual approval prototype
 
 CLOSER is a **lead-to-cash autopilot for service businesses**: it moves every inquiry toward the next best validated action until the customer books or approves, completes the service, and pays. The authoritative direction is the [CLOSER Product Bible](docs/PRODUCT_BIBLE.md).
 
-Phase 4.1A resets product hierarchy and future experience direction in documentation only. The verified Phase 4 Hebrew-first Today, Inbox, and Customer Workspace implementation remains intact as a technical baseline, but its visual language is not the owner-approved final production direction.
+Phase 4.1B implements one representative Neo-Luxury **Today / Command Center** at `/actions`. It is a product-owner visual approval gate, not an approved design system. Inbox, Customer Workspace, engineering routes, and the verified Phase 1–3 engine remain intact and have not adopted this visual language.
 
 This is an internal, local-only engineering build. It uses fictional data, deterministic mock AI and messaging providers, and versioned browser storage. It connects to no external API and contains no secrets.
 
 ## Requirements
 
-- Node.js 22 or newer
+- Node.js 22 LTS or 24 LTS (the verified build uses Node 24.19.0)
 - npm 10 or newer
+
+Node 26 is intentionally outside the current supported range: its experimental global Web Storage getter can shadow jsdom's `localStorage` in Vitest when no `--localstorage-file` is configured. Use a supported LTS runtime rather than changing the shared test setup.
 
 ## Run locally
 
@@ -33,11 +35,16 @@ npm audit
 
 `npm run verify` runs lint, strict TypeScript checking, all Vitest tests, and the production build in sequence.
 
-## Implemented Phase 4 routes
+## Owner approval prototype
 
-- `/actions` — Hebrew-first Today view: attention, today’s commitments, and real outstanding balances
-- `/inbox` — split-view business inbox with contextual recommendation and explicit Human Takeover state
-- `/customer/:id` — unified customer, work, payment, facts, conversation, consent, and activity workspace
+- `/actions` — Neo-Luxury Command Center with operating state, human-prioritized decisions, Today, real balances, and tenant-scoped proof of prepared automation work
+
+The open-source `MaskedHeading` and `MoltenMetal` implementations supplied for this milestone are adapted locally with TypeScript, Hebrew/RTL handling, reduced-motion fallbacks, WebGL lifecycle cleanup, and a deliberate mobile GPU budget. `gsap` and `ogl` are the only added runtime dependencies. No React Bits Pro code, registry, license key, or MCP is used.
+
+## Preserved Phase 4 routes
+
+- `/inbox` — existing split-view business inbox
+- `/customer/:id` — existing unified customer workspace
 
 ## Engineering routes
 

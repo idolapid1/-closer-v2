@@ -1,5 +1,13 @@
 # Product UX — Phase 4 implementation record
 
+## Phase 4.1B approval prototype
+
+`/actions` now carries one deliberately isolated Neo-Luxury Command Center direction. The first viewport combines a restrained ambient operating field, a single expressive identity line, the number of active opportunities, the number of owner decisions, and the beginning of the decision queue. Human Takeover is ranked first; balances remain separate and actionable; Today and proof of prepared automation work follow below.
+
+The owner hierarchy shown in the prototype is **Today → Customers → Calendar / Jobs → Money → More**. Only Today is active during this approval milestone. Engineering routes are absent from owner navigation but remain directly available. Inbox and Customer Workspace retain their verified Phase 4 implementation until the product owner explicitly approves or rejects this direction.
+
+The prototype uses a tenant-scoped presentation projection only. It does not create analytics, mutate commercial records, or treat automatic preparation as completed work. Its date and relative ages come from the same `ProductTodayView.asOf` value used to derive the day’s commercial truth.
+
 > **Status:** This document records the verified Phase 4 interface as implemented. It is not the approved future product hierarchy or final visual direction. [CLOSER Product Bible](PRODUCT_BIBLE.md) is authoritative: Today / Command Center leads the product, Customers / Opportunities carry the commercial story, and Inbox becomes contextual rather than product-defining. A new direction must begin with one owner-reviewed prototype before propagation.
 
 Phase 4 gives CLOSER a production product layer around three questions a service-business owner asks repeatedly: what needs attention, who is waiting, and what is happening with this customer. The interface is Hebrew-first, action-first, and intentionally avoids CRM and AI terminology.
