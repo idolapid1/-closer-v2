@@ -4,7 +4,7 @@ CLOSER is a **lead-to-cash autopilot for service businesses**: it moves every in
 
 Phase 4.2 propagates the approved Neo-Luxury foundation across the complete normal owner application. Today, Customers, Customer Workspace, Conversation, Calendar/Jobs, Money, and More now share one dark Hebrew-first operating environment. The verified Phase 1–3 commercial engine remains the source of truth; `/debug` and the other engineering routes deliberately keep their utilitarian presentation.
 
-This is an internal, local-only engineering build. It uses fictional data, deterministic mock AI, messaging, and inbound-connector providers, and versioned browser storage. It connects to no external API and contains no secrets.
+The owner product still runs in deterministic **demo mode** by default. Production Foundation v1 adds a separate Fastify/PostgreSQL trust boundary, OIDC/Supabase-compatible JWT authentication, tenant roles, typed APIs, durable job/webhook/idempotency contracts, and a server revenue ledger. No live customer connector, hosted database, external AI, or payment gateway is enabled by default, and the repository contains no secrets.
 
 ## Requirements
 
@@ -22,12 +22,26 @@ npm run dev
 
 Vite prints the local URL, normally `http://localhost:5173`. The default route opens **Today** at `/actions`. The owner menu links to `/customers`, `/work`, `/money`, and `/more`; `/customer/:id` and `/inbox` provide the journey and conversation contexts. `/debug` preserves the Conversation Simulator. The business selector switches among the three deterministic clinic, detailing, and home-services tenants.
 
+## Production foundation
+
+The production path is explicitly separate from browser demo persistence:
+
+```bash
+docker compose -f docker-compose.production-local.yml up -d
+cp .env.example .env
+npm run db:migrate
+npm run dev:server
+```
+
+Provide a real local/test OIDC JWKS URL and issuer in the ignored `.env`. The server defaults to mock connector execution and refuses live connector mode. Its authenticated boundary supports tenant provisioning, scoped customer/conversation/revenue reads, commercial journey creation, durable follow-ups, bookings, payments/refunds, revenue events, Copilot audit/execution, and signed webhook receipts. See [Production architecture](docs/PRODUCTION_ARCHITECTURE.md).
+
 ## Quality commands
 
 ```bash
 npm run lint
 npm run typecheck
 npm run test
+npm run test:server
 npm run build
 npm run verify
 npm audit
@@ -54,7 +68,7 @@ The open-source `MaskedHeading` and `MoltenMetal` implementations are adapted lo
 - `/quotes` — quote/job, deposit, scheduling, completion, and balance controls
 - `/debug` — Conversation Simulator, tool results, memory, follow-ups, handoffs, financial events, raw tenant state, and reset
 
-## Architecture and trust boundary
+## Architecture and trust boundaries
 
 Domain entities and rules are pure TypeScript. `CloserService` is the mutation boundary. `CommercialJourneyService` derives opportunity totals, collection, stage, relationships, and one action from domain truth; `ActivityTimelineService` records tenant-scoped idempotent business events. `ProductReadService` builds tenant-scoped presentation models for Today, Inbox, Customers, Customer Workspace, Work, Money, and revenue truth, while `productCopy` translates internal states into plain Hebrew. Focused conversation services retain the Phase 2 trust boundary.
 
@@ -63,6 +77,8 @@ Revenue presentation is deliberately conservative. Validated collection is net c
 The persisted sales context records source, external source reference, priority, and typed objections on the existing Lead opportunity. Follow-up records carry vertical cadence, sequence, channel, attempts, owner, draft, result, stop reason, and idempotency. Reactivation is owner-approved, marketing-consent gated, and scheduled rather than sent immediately. The Owner Copilot boundary exposes tenant-authorized read tools and requires explicit approval for business-changing tools. WhatsApp, Instagram, website-form, and email connector contracts have deterministic fixtures; all production connectors remain disabled.
 
 The AI provider is untrusted and has no repository, network, clock, or mutation access. The application reconstructs auto-sent Level 1/2 replies from validated knowledge/tool results. Appointment, quote, deposit, payment, and scheduling changes are proposals until the existing application use cases validate them. React never accesses `localStorage` or implements business rules.
+
+In production mode the browser also has no repository/database access. It calls `ProductionApiClient` with a short-lived token; the server verifies signature/issuer/audience and resolves every tenant membership before accessing `PostgresProductionStore`. Tenant-linked foreign keys, unique operation keys, and RLS add defense in depth. Server-only `CLOSER_SECRET_*` references never enter Vite or API responses.
 
 See [Product Bible](docs/PRODUCT_BIBLE.md), [Architecture](docs/ARCHITECTURE.md), [Revenue OS](docs/REVENUE_OS.md), [Product UX history](docs/PRODUCT_UX.md), [Phase 4 design-system history](docs/DESIGN_SYSTEM.md), [Conversation Engine](docs/CONVERSATION_ENGINE.md), [Assistant Safety](docs/ASSISTANT_SAFETY.md), [Assistant Tools](docs/ASSISTANT_TOOLS.md), and [Financial Rules](docs/FINANCIAL_RULES.md).
 
@@ -84,6 +100,6 @@ Never commit `.env` files, credentials, tokens, customer exports, or production 
 
 ## Deliberate exclusions
 
-The current build does not include production AI, live WhatsApp/Meta/Instagram/email, a backend, authentication, background workers, calendar/payment integrations, deployment, or redesigns for the engineering appointment, quote/job, and debug modules. Follow-ups and reactivation are inspectable scheduled records, not timers. Payments, refunds, and revenue attribution are validated manual records, not gateway or accounting transactions.
+The current build does not include production AI, live WhatsApp/Meta/Instagram/email, a live payment gateway, calendar integrations, deployment, or redesigns for the engineering appointment, quote/job, and debug modules. A server/database/auth/job/webhook foundation now exists, but no hosted database, auth project, real worker scheduler, or connector credential is configured here. Production sends and charges remain disabled.
 
 See [Commercial journey](docs/COMMERCIAL_JOURNEY.md) for reconciliation, closing, recovery, idempotency, action, and activity rules.

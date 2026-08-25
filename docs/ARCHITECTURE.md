@@ -12,6 +12,12 @@ The project is a strict TypeScript React/Vite application with these layers:
 - `application/presentation/` — tenant-scoped product read models and plain-Hebrew presentation copy
 - `repositories/` — tenant-scoped contracts and schema v5
 - `infrastructure/` — localStorage/in-memory adapters, validation, and v1–v4→v5 migration
+- `server/api` — authenticated Fastify routes, validation, safe errors, and role checks
+- `server/auth` — OIDC/JWKS JWT verification
+- `server/application` — server authorization, idempotency, and durable repository contracts
+- `server/infrastructure` — PostgreSQL and deterministic in-memory server adapters
+- `server/jobs` and `server/webhooks` — leased mock follow-up execution and signed ingestion
+- `server/migrations` — PostgreSQL schema, tenant constraints, audits, and RLS
 - `integrations/` — provider/connector ports, deterministic mocks, and disabled production adapters
 - `data/` — deterministic fictional multi-vertical seed
 - `state/` — React subscription adapter
@@ -65,3 +71,5 @@ Level 3 tools remain proposals: real appointment, quote, deposit, payment, and j
 ## Persistence
 
 Every collection is tenant scoped. Schema v5 preserves earlier workflow/activity migrations and adds sales-source context, vertical follow-up/reactivation settings, auditable revenue context, and unattributed defaults. Valid v1–v4 data is enriched and preserved; malformed data returns to the deterministic seed. Repository mismatched writes throw, and cross-tenant reads return nothing.
+
+Demo mode continues to use this versioned browser schema. Production mode uses browser → authenticated API → authorization/application service → PostgreSQL repository. A tenant route parameter is never authorization: membership is resolved from the verified identity, each SQL query is tenant-filtered, tenant-linked foreign keys reject cross-customer references, and RLS/unique constraints add defense in depth. See [Production architecture](PRODUCTION_ARCHITECTURE.md).

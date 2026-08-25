@@ -1,20 +1,17 @@
-# Recommended next batch — server trust boundary and durable execution
+# Recommended next batch — controlled production deployment
 
-The local build now has a coherent owner presentation layer plus deterministic revenue-attribution, follow-up, reactivation, Owner Copilot, and connector boundaries. Do not enable live channel or AI execution before CLOSER has a production server trust boundary.
+Production Foundation v1 now adds the server trust boundary, PostgreSQL migration, JWT/membership authorization, durable job/webhook/idempotency contracts, and server revenue ledger. Do not enable live channel or AI execution until this boundary is deployed and observed in a controlled environment.
 
-Recommended Phase 5 scope:
+Recommended scope:
 
-1. production backend application shell and environment configuration;
-2. authenticated owner sessions and business membership;
-3. server-enforced tenant scope on every repository/use case;
-4. durable relational persistence and safe migration from local demo data where appropriate;
-5. server-side idempotency keys, audit records, and financial/scheduling constraints;
-6. API contracts that preserve `CloserService`/focused-service validation and keep providers untrusted;
-7. durable background-job primitives for existing deterministic follow-up/reactivation records, without connecting customer channels yet;
-8. observability, backups, recovery, and security regression coverage.
-9. webhook inbox/outbox records that verify signatures and bind an external business account server-side before `ingestInboundLeadEvent` is called;
-10. payment-provider webhook reconciliation that can verify collection without trusting browser or customer claims.
+1. provision managed PostgreSQL/Supabase and verify migration/restore on a staging project;
+2. configure real OIDC/Supabase Auth sessions, invitations, and the production UI session adapter;
+3. deploy the API and a durable worker/scheduler with logs, metrics, alerts, and distributed rate limiting;
+4. exercise complete tenant journeys against the staging database and add database integration tests;
+5. implement the WhatsApp Business Platform signature/connector adapter in receive-only shadow mode;
+6. add payment-provider webhook reconciliation without trusting browser or customer claims;
+7. run real AI in shadow mode and evaluate it before any customer-facing autonomy.
 
-Keep the current deterministic local providers and demo tenants available as a test/simulation mode. Do not combine this phase with real WhatsApp, a payment gateway, calendar sync, or real LLM autonomy. Those follow after the server boundary and durable event ingestion are proven.
+Keep deterministic providers and demo tenants available as simulation mode. Real sends, charges, calendar writes, and LLM autonomy remain separate approvals.
 
-Before Phase 5 planning, run a physical iPhone Safari pass on the final Phase 4.2 build, especially mixed Hebrew/English MaskedHeading shaping, safe-area navigation, keyboard/composer behavior, and WebGL thermal impact. The implementation is WebKit-defensive, but native Safari was not available in the current engineering environment.
+The local implementation environment had no Docker or `psql`; applying the migration to a real PostgreSQL 16 staging instance is the first deployment gate.

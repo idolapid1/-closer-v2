@@ -40,3 +40,12 @@
 5. Update the relevant concise document under `docs/`.
 
 Prefer focused application services over expanding `CloserService` or creating generic frameworks. Avoid KPI walls, generic CRM abstractions, workflow builders, premature production integrations, and terminology a service-business owner should not need.
+
+## Production trust boundary
+
+- Keep demo/browser persistence and authenticated production data modes explicit; never silently mix them.
+- Treat JWT subject as identity, not tenant authority. Resolve active organization membership server-side for every tenant operation.
+- Keep connector, AI, payment, mail, and webhook secrets server-only; no secret may use a `VITE_` variable.
+- Use PostgreSQL transactions, tenant-linked foreign keys, unique operation keys, and idempotency records for harmful retries.
+- Follow-up workers claim with a lease and `SKIP LOCKED`; live dispatch remains disabled until a connector is authorized.
+- Webhook adapters verify exact raw bodies and provider signatures before parsing or mapping tenant data.

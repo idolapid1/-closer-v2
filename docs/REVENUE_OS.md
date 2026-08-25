@@ -34,4 +34,4 @@ WhatsApp, Instagram, website form, and email share a normalized inbound event co
 
 ## Current limitations
 
-There is no backend authorization, durable queue, production webhook, live messaging, payment gateway, accounting reconciliation, real AI provider, automatic attribution, background follow-up sender, or recurrence policy. These boundaries are modeled locally so later integrations can be added without bypassing tenant, consent, financial, scheduling, or idempotency rules.
+Production Foundation v1 adds authenticated server authorization, PostgreSQL ledger/idempotency records, webhook verification contracts, and lease-safe mock follow-up execution. There is still no deployed database/auth project, production scheduler, real provider webhook adapter, live messaging, payment gateway, accounting reconciliation, real AI provider, automatic attribution, or recurrence policy. Live execution stays disabled so later integrations cannot bypass tenant, consent, financial, scheduling, or idempotency rules.

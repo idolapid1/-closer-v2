@@ -1,6 +1,8 @@
-# Revenue operating-system foundation test report
+# Production Foundation v1 test report
 
 Status: the complete local quality gate passed on 2026-08-25 using the supported bundled Node 24.19.0 runtime. `src/test/setup.ts` remains unchanged; the test command disables Node's experimental global Web Storage so jsdom owns browser `localStorage`.
+
+Client/jsdom and server/Node tests now use separate Vitest configurations. This preserves the browser setup exactly as before and prevents a Node test from pretending a browser global exists.
 
 ## Automated coverage
 
@@ -30,8 +32,18 @@ The suite preserves all Phase 1–3 domain/application scenarios and adds owner-
 - tenant-authorized Owner Copilot reads, approval-gated mutation, and idempotent audit activity;
 - deterministic WhatsApp, Instagram, form, and email ingestion with tenant mismatch and repeat-delivery regressions;
 - v1–v4 to schema-v5 migration, including unattributed revenue defaults.
+- real JWT signature/issuer/audience/subject verification;
+- unauthenticated calls, membership lookup, owner/admin/member permissions, and cross-tenant ID guessing;
+- idempotent User → Tenant provisioning and multi-membership support;
+- tenant-scoped customer, conversation, revenue, follow-up, connector, and Copilot boundaries;
+- complete authenticated journey → follow-up → booking → payment → revenue creation;
+- payment/reference validation, refund attribution/netting, and duplicate-event protection;
+- exact-raw-body webhook signatures, duplicate delivery, and changed-payload replay rejection;
+- concurrent follow-up worker leasing with one deterministic send;
+- typed production API client authentication and explicit demo/production modes;
+- source-controlled migration coverage for durable tables, `SKIP LOCKED`, and RLS.
 
-Latest automated result: **17 test files and 152 tests passed**. ESLint passed with zero warnings, strict TypeScript passed, the production build passed, and `npm run verify` passed. A fresh `npm audit` remains part of the final release gate.
+Latest automated result: **19 test files and 182 tests passed**: 155 browser/domain/application tests and 27 server/auth/security tests. ESLint passed with zero warnings, both strict TypeScript projects passed, the client and server production builds passed, `npm run verify` passed, and the fresh npm audit reported 0 vulnerabilities.
 
 ## Rendered QA
 
@@ -66,3 +78,5 @@ Vite 7.3.6 transforms 1,935 modules. The owner application emits:
 - liquid-metal material 297.41 kB
 
 The main JavaScript chunk is below Vite’s 500 kB advisory. GSAP/OGL and the ambient identity stay in the lazy Today chunk.
+
+The server build also emits strict ESM JavaScript and declarations under ignored `dist-server/server/`; the source migration remains under `server/migrations/`. Docker/`psql` were unavailable in this environment, so migration application against a live PostgreSQL 16 instance is not claimed.
