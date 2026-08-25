@@ -7,8 +7,13 @@ import {
   ConversationStage,
   ConversationState,
   CustomerFactKey,
+  FollowUpScenario,
+  FollowUpStatus,
+  FollowUpStopReason,
   HandoffReason,
   JobStatus,
+  LeadPriority,
+  LeadSource,
   LeadStatus,
   MessageAuthor,
   MessageDirection,
@@ -21,13 +26,16 @@ import {
   PaymentReferenceType,
   PaymentStatus,
   QuoteStatus,
+  RevenueAttributionStatus,
   RevenueStage,
+  TeamRole,
   WorkflowType,
   type Appointment,
   type ConsentRecord,
   type Contact,
   type Conversation,
   type CustomerFactValue,
+  type FollowUpResult,
   type HumanHandoff,
   type Job,
   type Lead,
@@ -37,6 +45,7 @@ import {
   type Quote,
   type QuoteItem,
   type RevenueEvent,
+  type SalesObjection,
   type TenantEntity,
 } from '../domain/entities';
 import {
@@ -50,6 +59,7 @@ import {
 } from '../domain/rules';
 import type { AIProvider } from '../integrations/ai/AIProvider';
 import type { MessagingProvider } from '../integrations/messaging/MessagingProvider';
+import type { InboundLeadEvent } from '../integrations/connectors/LeadConnector';
 import type { DatabasePort, DatabaseSchema } from '../repositories/contracts';
 import {
   AutonomyLevel,
@@ -65,11 +75,29 @@ import { CustomerMemoryService } from './conversation/CustomerMemoryService';
 import { FollowUpService } from './conversation/FollowUpService';
 import { ActivityTimelineService } from './commercial/ActivityTimelineService';
 import { CommercialJourneyService } from './commercial/CommercialJourneyService';
+import {
+  RevenueAttributionService,
+  type VerifyRevenueAttributionInput,
+} from './revenue/RevenueAttributionService';
+import {
+  ReactivationService,
+  type ReactivationCandidate,
+} from './reactivation/ReactivationService';
+import {
+  OwnerCopilotToolName,
+  type OwnerActionAuthorization,
+  type OwnerCopilotToolRequest,
+  type OwnerCopilotToolResult,
+} from './owner/OwnerCopilotTools';
 import type { ActionCenterItem, CommercialOpportunityView } from '../types/commercial';
 import {
   ProductReadService,
   type ProductCustomerView,
+  type ProductCustomersView,
   type ProductInboxView,
+  type ProductMoneyView,
+  type ProductRevenueOverviewView,
+  type ProductScheduleView,
   type ProductTodayView,
 } from './presentation/ProductReadService';
 
@@ -107,12 +135,16 @@ export interface RecordPaymentInput {
 
 export interface ReceiveCustomerMessageOptions {
   providerMessageId?: string;
+  occurredAt?: string;
 }
 
 export interface CreateCustomerOpportunityInput {
   businessId: string;
   displayName: string;
   phone?: string;
+  email?: string;
+  source?: LeadSource;
+  sourceReferenceId?: string;
 }
 
 export class CloserService {
@@ -123,6 +155,8 @@ export class CloserService {
   private readonly followUpService: FollowUpService;
   private readonly timelineService: ActivityTimelineService;
   private readonly commercialJourney: CommercialJourneyService;
+  private readonly revenueAttribution: RevenueAttributionService;
+  private readonly reactivation: ReactivationService;
   private readonly productReads: ProductReadService;
 
   constructor(
@@ -136,7 +170,14 @@ export class CloserService {
     this.followUpService = new FollowUpService(database, now, id);
     this.timelineService = new ActivityTimelineService(database, now, id);
     this.commercialJourney = new CommercialJourneyService(database);
-    this.productReads = new ProductReadService(database, this.commercialJourney, now);
+    this.revenueAttribution = new RevenueAttributionService(database, now);
+    this.reactivation = new ReactivationService(database, now);
+    this.productReads = new ProductReadService(
+      database,
+      this.commercialJourney,
+      now,
+      this.revenueAttribution,
+    );
   }
 
   snapshot(): DatabaseSchema {
@@ -181,6 +222,200 @@ export class CloserService {
     return this.productReads.customer(businessId, contactId);
   }
 
+  productCustomers(businessId: string): ProductCustomersView {
+    return this.productReads.customers(businessId);
+  }
+
+  productSchedule(businessId: string): ProductScheduleView {
+    return this.productReads.schedule(businessId);
+  }
+
+  productMoney(businessId: string): ProductMoneyView {
+    return this.productReads.money(businessId);
+  }
+
+  productRevenueOverview(businessId: string): ProductRevenueOverviewView {
+    return this.productReads.revenueOverview(businessId);
+  }
+
+  verifyRevenueAttribution(input: VerifyRevenueAttributionInput): RevenueEvent {
+    const event = this.revenueAttribution.verify(input);
+    this.activity(
+      input.businessId,
+      event.contactId,
+      event.conversationId,
+      ActivityType.RevenueAttributionVerified,
+      'Revenue attribution verified against business activity.',
+      {
+        revenueEventId: event.id,
+        attributionKind: event.attributionKind,
+        evidenceCount: event.contributingActivityIds.length,
+      },
+      `${input.operationKey}:activity`,
+    );
+    return event;
+  }
+
+  reactivationCandidates(businessId: string): ReactivationCandidate[] {
+    return this.reactivation.listCandidates(businessId);
+  }
+
+  prepareReactivation(
+    businessId: string,
+    leadId: string,
+    operationKey = `${leadId}:reactivation`,
+  ) {
+    const repositories = this.database.repositories;
+    const existing = repositories.scheduledFollowUps.find(
+      businessId,
+      (followUp) =>
+        followUp.scenario === FollowUpScenario.Reactivation &&
+        followUp.triggeringMessageId === operationKey &&
+        followUp.status === FollowUpStatus.Scheduled,
+    )[0];
+    if (existing) return existing;
+    const candidate = this.reactivation.requireCandidate(businessId, leadId);
+    const cadence = repositories.businessSettings.list(businessId)[0]
+      ?.followUpCadenceHours[FollowUpScenario.Reactivation];
+    if (!cadence?.length) {
+      throw new DomainError('No reactivation cadence is configured', 'FOLLOW_UP_CADENCE_MISSING');
+    }
+    this.reopenOpportunity(businessId, leadId, `${operationKey}:reopen`);
+    const followUp = this.followUpService.scheduleReactivation(
+      businessId,
+      candidate.conversationId,
+      operationKey,
+      `שלום ${candidate.customerName}, רצינו לבדוק אם עדיין רלוונטי לך להתקדם.`,
+    );
+    this.replaceNextAction(
+      businessId,
+      candidate.conversationId,
+      NextActionType.FutureReactivation,
+      'Owner-approved reactivation is ready for its configured follow-up.',
+      true,
+      followUp.dueAt,
+    );
+    this.activity(
+      businessId,
+      candidate.contactId,
+      candidate.conversationId,
+      ActivityType.ReactivationPrepared,
+      'Owner approved a consent-safe reactivation follow-up.',
+      { followUpId: followUp.id },
+      `${operationKey}:activity`,
+    );
+    return followUp;
+  }
+
+  executeOwnerCopilotTool(
+    authorization: OwnerActionAuthorization,
+    request: OwnerCopilotToolRequest,
+  ): OwnerCopilotToolResult {
+    const repositories = this.database.repositories;
+    if (!authorization.operationKey.trim()) {
+      throw new DomainError('Owner action operation key is required', 'OPERATION_KEY_REQUIRED');
+    }
+    const teamMember = repositories.teamMembers.get(
+      authorization.businessId,
+      authorization.requestedByTeamMemberId,
+    );
+    if (!teamMember || !teamMember.active || teamMember.role !== TeamRole.Owner) {
+      throw new DomainError('Owner action is not authorized', 'OWNER_ACTION_UNAUTHORIZED');
+    }
+
+    let result: OwnerCopilotToolResult;
+    if (request.tool === OwnerCopilotToolName.GetHotLeads) {
+      result = {
+        tool: request.tool,
+        leads: repositories.leads
+          .find(
+            authorization.businessId,
+            (lead) =>
+              [LeadStatus.New, LeadStatus.Active, LeadStatus.Qualified].includes(lead.status) &&
+              [LeadPriority.High, LeadPriority.Urgent].includes(lead.priority),
+          )
+          .map((lead) => ({
+            leadId: lead.id,
+            contactId: lead.contactId,
+            conversationId: lead.conversationId,
+            priority: lead.priority,
+            knownValueCents: this.opportunity(authorization.businessId, lead.id).totalCents,
+          }))
+          .sort((first, second) =>
+            first.priority === second.priority
+              ? (second.knownValueCents ?? 0) - (first.knownValueCents ?? 0)
+              : first.priority === LeadPriority.Urgent
+                ? -1
+                : 1,
+          ),
+      };
+    } else if (request.tool === OwnerCopilotToolName.GetUnansweredConversations) {
+      result = {
+        tool: request.tool,
+        conversations: repositories.conversations
+          .find(
+            authorization.businessId,
+            (conversation) =>
+              conversation.mode !== ConversationMode.Closed &&
+              conversation.lastCustomerMessageAt !== null &&
+              (conversation.lastBusinessResponseAt === null ||
+                conversation.lastCustomerMessageAt > conversation.lastBusinessResponseAt),
+          )
+          .map((conversation) => ({
+            conversationId: conversation.id,
+            contactId: conversation.contactId,
+            waitingSince: conversation.lastCustomerMessageAt!,
+          }))
+          .sort((first, second) => first.waitingSince.localeCompare(second.waitingSince)),
+      };
+    } else if (request.tool === OwnerCopilotToolName.GetRevenueOverview) {
+      result = {
+        tool: request.tool,
+        revenue: this.productRevenueOverview(authorization.businessId),
+      };
+    } else if (request.tool === OwnerCopilotToolName.GetReactivationCandidates) {
+      result = {
+        tool: request.tool,
+        candidates: this.reactivationCandidates(authorization.businessId),
+      };
+    } else {
+      if (!authorization.approved) {
+        throw new DomainError(
+          'Business-changing owner action requires explicit approval',
+          'OWNER_APPROVAL_REQUIRED',
+        );
+      }
+      const followUp = this.prepareReactivation(
+        authorization.businessId,
+        request.leadId,
+        authorization.operationKey,
+      );
+      result = {
+        tool: request.tool,
+        followUpId: followUp.id,
+        dueAt: followUp.dueAt,
+      };
+    }
+    const resultCount =
+      'leads' in result
+        ? result.leads.length
+        : 'conversations' in result
+          ? result.conversations.length
+          : 'candidates' in result
+            ? result.candidates.length
+            : 1;
+    this.activity(
+      authorization.businessId,
+      null,
+      null,
+      ActivityType.OwnerToolExecuted,
+      `Authorized owner tool executed: ${request.tool}.`,
+      { tool: request.tool, resultCount },
+      `${authorization.operationKey}:owner-tool`,
+    );
+    return result;
+  }
+
   activityTimeline(businessId: string, contactId: string) {
     required(this.database.repositories.contacts.get(businessId, contactId), 'Contact not found');
     return this.timelineService.list(businessId, contactId);
@@ -195,7 +430,11 @@ export class CloserService {
       'Conversation not found',
     );
     if (result.shouldRemainClosedLost) {
-      this.followUpService.cancelPending(businessId, lead.conversationId);
+      this.followUpService.cancelPending(
+        businessId,
+        lead.conversationId,
+        FollowUpStopReason.OpportunityClosed,
+      );
       this.clearPendingActions(businessId, lead);
       return this.commercialJourney.evaluate(businessId, leadId).opportunity;
     }
@@ -229,7 +468,6 @@ export class CloserService {
         businessId,
         lead.conversationId,
         ConversationStage.AwaitingBalance,
-        addHours(this.now(), 24),
       );
     }
     if (result.action) {
@@ -263,7 +501,11 @@ export class CloserService {
       throw new DomainError('A won opportunity cannot be closed lost', 'INVALID_LEAD_STATE');
     }
     this.clearPendingActions(businessId, lead);
-    this.followUpService.cancelPending(businessId, lead.conversationId);
+    this.followUpService.cancelPending(
+      businessId,
+      lead.conversationId,
+      FollowUpStopReason.OpportunityClosed,
+    );
     const closed = repositories.leads.save(businessId, {
       ...lead,
       updatedAt: this.now(),
@@ -376,7 +618,11 @@ export class CloserService {
       }
       return structuredClone(record.decision);
     }
-    const at = this.now();
+    const receivedAt = new Date(options.occurredAt ?? this.now());
+    if (Number.isNaN(receivedAt.getTime())) {
+      throw new DomainError('Incoming message timestamp is invalid', 'INVALID_DATE');
+    }
+    const at = receivedAt.toISOString();
     const message: Message = {
       ...this.entityBase(businessId),
       conversationId,
@@ -388,7 +634,7 @@ export class CloserService {
       sentAt: at,
     };
     repositories.messages.save(businessId, message);
-    this.followUpService.cancelPending(businessId, conversationId);
+    this.followUpService.completeForCustomerResponse(businessId, conversationId);
     repositories.conversations.save(businessId, {
       ...conversation,
       updatedAt: at,
@@ -549,11 +795,32 @@ export class CloserService {
       repositories.businesses.get(input.businessId, input.businessId),
       'Business not found',
     );
+    const source = input.source ?? LeadSource.Manual;
+    const sourceReferenceId = input.sourceReferenceId?.trim() || null;
+    if (sourceReferenceId) {
+      const existingLead = repositories.leads.find(
+        input.businessId,
+        (lead) => lead.source === source && lead.sourceReferenceId === sourceReferenceId,
+      )[0];
+      if (existingLead) {
+        return {
+          contact: required(
+            repositories.contacts.get(input.businessId, existingLead.contactId),
+            'Contact not found',
+          ),
+          lead: existingLead,
+          conversation: required(
+            repositories.conversations.get(input.businessId, existingLead.conversationId),
+            'Conversation not found',
+          ),
+        };
+      }
+    }
     const contact: Contact = {
       ...this.entityBase(input.businessId),
       displayName: input.displayName.trim() || 'New customer',
       phone: input.phone?.trim() || `+972-555-${this.id().slice(0, 7)}`,
-      email: null,
+      email: input.email?.trim() || null,
       address: null,
       notes: [],
     };
@@ -561,7 +828,7 @@ export class CloserService {
     const conversation: Conversation = {
       ...this.entityBase(input.businessId),
       contactId: contact.id,
-      channel: ConversationChannel.WhatsApp,
+      channel: channelForLeadSource(source),
       ownerTeamMemberId: null,
       state: ConversationState.NewInquiry,
       inferredStage: ConversationStage.NewInquiry,
@@ -585,6 +852,10 @@ export class CloserService {
       nextActionId: null,
       closedAt: null,
       lostReason: null,
+      source,
+      sourceReferenceId,
+      priority: LeadPriority.Normal,
+      objections: [],
     };
     repositories.leads.save(input.businessId, lead);
     this.replaceNextAction(
@@ -612,6 +883,93 @@ export class CloserService {
         'Conversation not found',
       ),
     };
+  }
+
+  async ingestInboundLeadEvent(
+    businessId: string,
+    event: InboundLeadEvent,
+  ): Promise<{
+    contact: Contact;
+    lead: Lead;
+    conversation: Conversation;
+    decision: AssistantDecision;
+  }> {
+    if (event.businessId !== businessId) {
+      throw new DomainError('Connector event tenant does not match its route', 'TENANT_MISMATCH');
+    }
+    if (
+      ![
+        LeadSource.WhatsApp,
+        LeadSource.Instagram,
+        LeadSource.WebsiteForm,
+        LeadSource.Email,
+      ].includes(event.source)
+    ) {
+      throw new DomainError('Unsupported inbound connector source', 'CONNECTOR_SOURCE_UNSUPPORTED');
+    }
+    const repositories = this.database.repositories;
+    const existing = repositories.leads.find(
+      businessId,
+      (lead) =>
+        lead.source === event.source &&
+        lead.sourceReferenceId === event.externalConversationId,
+    )[0];
+    if (existing?.status === LeadStatus.Lost) {
+      this.reopenOpportunity(
+        businessId,
+        existing.id,
+        `${event.source}:${event.providerEventId}:customer-return`,
+      );
+    }
+    const opportunity = this.createCustomerOpportunity({
+      businessId,
+      displayName: event.customer.displayName,
+      ...(event.customer.phone ? { phone: event.customer.phone } : {}),
+      ...(event.customer.email ? { email: event.customer.email } : {}),
+      source: event.source,
+      sourceReferenceId: event.externalConversationId,
+    });
+    const decision = await this.receiveCustomerMessage(
+      businessId,
+      opportunity.conversation.id,
+      event.message,
+      {
+        providerMessageId: `${event.source}:${event.providerEventId}`,
+        occurredAt: event.occurredAt,
+      },
+    );
+    return { ...opportunity, decision };
+  }
+
+  setLeadPriority(businessId: string, leadId: string, priority: LeadPriority): Lead {
+    const repositories = this.database.repositories;
+    const lead = required(repositories.leads.get(businessId, leadId), 'Lead not found');
+    if ([LeadStatus.Won, LeadStatus.Lost, LeadStatus.Archived].includes(lead.status)) {
+      throw new DomainError('Closed opportunities cannot change priority', 'OPPORTUNITY_CLOSED');
+    }
+    return repositories.leads.save(businessId, {
+      ...lead,
+      updatedAt: this.now(),
+      priority,
+    });
+  }
+
+  recordLeadObjection(
+    businessId: string,
+    leadId: string,
+    objection: SalesObjection,
+  ): Lead {
+    const repositories = this.database.repositories;
+    const lead = required(repositories.leads.get(businessId, leadId), 'Lead not found');
+    if ([LeadStatus.Won, LeadStatus.Lost, LeadStatus.Archived].includes(lead.status)) {
+      throw new DomainError('Closed opportunities cannot add objections', 'OPPORTUNITY_CLOSED');
+    }
+    if (lead.objections.includes(objection)) return lead;
+    return repositories.leads.save(businessId, {
+      ...lead,
+      updatedAt: this.now(),
+      objections: [...lead.objections, objection],
+    });
   }
 
   selectServiceForLead(businessId: string, leadId: string, serviceId: string): Lead {
@@ -685,6 +1043,28 @@ export class CloserService {
       followUp.reason,
     );
     return followUp;
+  }
+
+  recordFollowUpAttempt(
+    businessId: string,
+    followUpId: string,
+    result: FollowUpResult.Sent | FollowUpResult.Failed,
+    operationKey: string,
+  ) {
+    return this.followUpService.recordAttempt(businessId, followUpId, result, operationKey);
+  }
+
+  cancelFollowUpsManually(businessId: string, conversationId: string) {
+    required(
+      this.database.repositories.conversations.get(businessId, conversationId),
+      'Conversation not found',
+    );
+    return this.followUpService.cancelPending(
+      businessId,
+      conversationId,
+      FollowUpStopReason.ManualOverride,
+      true,
+    );
   }
 
   inferConversationStage(businessId: string, conversationId: string): ConversationStage {
@@ -850,7 +1230,11 @@ export class CloserService {
       handoffId: handoff.id,
     });
     this.replaceNextAction(businessId, conversationId, NextActionType.HumanReview, detail, false);
-    this.followUpService.cancelPending(businessId, conversationId);
+    this.followUpService.cancelPending(
+      businessId,
+      conversationId,
+      FollowUpStopReason.HumanTakeover,
+    );
     this.activity(businessId, conversation.contactId, conversationId, ActivityType.HandoffStarted, `Human takeover: ${detail}`);
     return handoff;
   }
@@ -1060,7 +1444,6 @@ export class CloserService {
       deposit > 0
         ? ConversationStage.AwaitingDeposit
         : ConversationStage.AwaitingConfirmation,
-      addHours(this.now(), deposit > 0 ? 48 : 24),
     );
     this.activity(input.businessId, input.contactId, lead.conversationId, ActivityType.AppointmentCreated, 'Appointment created.', { appointmentId: appointment.id }, `${appointment.operationKey}:created`);
     this.reconcileOpportunity(input.businessId, lead.id);
@@ -1165,7 +1548,6 @@ export class CloserService {
         businessId,
         lead.conversationId,
         ConversationStage.AwaitingBalance,
-        addHours(this.now(), 24),
       );
     }
     this.reconcileOpportunity(businessId, appointment.leadId);
@@ -1240,7 +1622,6 @@ export class CloserService {
       businessId,
       lead.conversationId,
       ConversationStage.QuoteSent,
-      addHours(this.now(), 72),
     );
     this.activity(businessId, quote.contactId, lead.conversationId, ActivityType.QuoteSent, 'Quote sent.', { quoteId, totalCents: quote.totalCents }, `${quoteId}:sent`);
     this.reconcileOpportunity(businessId, quote.leadId);
@@ -1353,7 +1734,6 @@ export class CloserService {
         businessId,
         lead.conversationId,
         ConversationStage.AwaitingDeposit,
-        addHours(this.now(), 48),
       );
     }
     this.activity(businessId, quote.contactId, lead.conversationId, ActivityType.QuoteAccepted, 'Quote accepted.', { quoteId }, `${quoteId}:accepted:activity`);
@@ -1493,7 +1873,6 @@ export class CloserService {
         businessId,
         lead.conversationId,
         ConversationStage.AwaitingBalance,
-        addHours(this.now(), 24),
       );
     }
     this.reconcileOpportunity(businessId, job.leadId);
@@ -1743,14 +2122,13 @@ export class CloserService {
     businessId: string,
     conversationId: string,
     stage: ConversationStage,
-    dueAt: string,
   ): void {
     try {
-      this.followUpService.scheduleForStage(businessId, conversationId, stage, dueAt);
+      this.followUpService.scheduleForStage(businessId, conversationId, stage);
     } catch (error) {
       if (
         !(error instanceof DomainError) ||
-        !['FOLLOW_UP_BLOCKED', 'FOLLOW_UP_NOT_REQUIRED', 'MARKETING_BLOCKED', 'OPERATIONAL_BLOCKED'].includes(
+        !['FOLLOW_UP_BLOCKED', 'FOLLOW_UP_NOT_REQUIRED', 'FOLLOW_UP_CADENCE_MISSING', 'MARKETING_BLOCKED', 'OPERATIONAL_BLOCKED'].includes(
           error.code,
         )
       ) {
@@ -1861,7 +2239,16 @@ export class CloserService {
     return true;
   }
 
-  private recordRevenueEvent(input: Omit<RevenueEvent, keyof TenantEntity | 'occurredAt'> & { businessId: string }): RevenueEvent {
+  private recordRevenueEvent(input: {
+    businessId: string;
+    contactId: string;
+    referenceType: PaymentReferenceType;
+    referenceId: string;
+    stage: RevenueStage;
+    amountCents: number;
+    causationId: string;
+    correlationId: string;
+  }): RevenueEvent {
     const repositories = this.database.repositories;
     const existing = repositories.revenueEvents.find(
       input.businessId,
@@ -1877,15 +2264,33 @@ export class CloserService {
       }
       return existing;
     }
+    const leadId = this.leadIdForReference(
+      input.businessId,
+      input.referenceType,
+      input.referenceId,
+    );
+    const lead = required(repositories.leads.get(input.businessId, leadId), 'Lead not found');
+    if (lead.contactId !== input.contactId) {
+      throw new DomainError('Revenue event does not match its opportunity', 'REFERENCE_MISMATCH');
+    }
     const event: RevenueEvent = {
       ...this.entityBase(input.businessId),
       contactId: input.contactId,
+      leadId: lead.id,
+      conversationId: lead.conversationId,
+      leadSource: lead.source,
       referenceType: input.referenceType,
       referenceId: input.referenceId,
       stage: input.stage,
       amountCents: input.amountCents,
       causationId: input.causationId,
       correlationId: input.correlationId,
+      attributionStatus: RevenueAttributionStatus.Unattributed,
+      attributionKind: null,
+      contributingActivityIds: [],
+      attributionOperationKey: null,
+      attributedAt: null,
+      attributedByTeamMemberId: null,
       occurredAt: this.now(),
     };
     return repositories.revenueEvents.save(input.businessId, event);
@@ -2025,7 +2430,11 @@ export class CloserService {
   private closeWon(businessId: string, lead: Lead, conversation: Conversation): void {
     if (lead.status === LeadStatus.Won) return;
     this.clearPendingActions(businessId, lead);
-    this.followUpService.cancelPending(businessId, lead.conversationId);
+    this.followUpService.cancelPending(
+      businessId,
+      lead.conversationId,
+      FollowUpStopReason.OpportunityClosed,
+    );
     const repositories = this.database.repositories;
     repositories.leads.save(businessId, {
       ...required(repositories.leads.get(businessId, lead.id), 'Lead not found'),
@@ -2119,6 +2528,14 @@ function required<T>(value: T | null | undefined, message: string): T {
   return value;
 }
 
+function channelForLeadSource(source: LeadSource): ConversationChannel {
+  if (source === LeadSource.WhatsApp) return ConversationChannel.WhatsApp;
+  if (source === LeadSource.Instagram) return ConversationChannel.Instagram;
+  if (source === LeadSource.WebsiteForm) return ConversationChannel.WebsiteForm;
+  if (source === LeadSource.Email) return ConversationChannel.Email;
+  return ConversationChannel.Manual;
+}
+
 function parseTime(value: string): [number, number] {
   const match = /^(\d{2}):(\d{2})$/.exec(value);
   if (!match) throw new DomainError(`Invalid time: ${value}`, 'INVALID_TIME');
@@ -2166,10 +2583,6 @@ function resumedActionReason(action: NextActionType): string {
   if (action === NextActionType.OfferAppointment) return 'Offer a validated appointment option.';
   if (action === NextActionType.ConfirmAppointment) return 'Confirm the appointment.';
   return 'Assistant explicitly resumed; review the latest customer need.';
-}
-
-function addHours(value: string, hours: number): string {
-  return new Date(new Date(value).getTime() + hours * 60 * 60 * 1000).toISOString();
 }
 
 function intervalsOverlap(

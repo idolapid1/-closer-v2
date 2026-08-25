@@ -29,6 +29,8 @@ export interface BusinessSettings extends TenantEntity {
   taxRateBasisPoints: number;
   defaultDepositBasisPoints: number;
   paymentMethods: string[];
+  followUpCadenceHours: Partial<Record<FollowUpScenario, number[]>>;
+  reactivationInactivityDays: number;
 }
 
 export interface KnowledgeFaq {
@@ -105,6 +107,30 @@ export enum LeadStatus {
   Archived = 'ARCHIVED',
 }
 
+export enum LeadSource {
+  WhatsApp = 'WHATSAPP',
+  Instagram = 'INSTAGRAM',
+  WebsiteForm = 'WEBSITE_FORM',
+  Email = 'EMAIL',
+  Manual = 'MANUAL',
+  Import = 'IMPORT',
+}
+
+export enum LeadPriority {
+  Normal = 'NORMAL',
+  High = 'HIGH',
+  Urgent = 'URGENT',
+}
+
+export enum SalesObjection {
+  Price = 'PRICE',
+  Timing = 'TIMING',
+  Trust = 'TRUST',
+  ServiceFit = 'SERVICE_FIT',
+  Competitor = 'COMPETITOR',
+  Other = 'OTHER',
+}
+
 export interface Lead extends TenantEntity {
   contactId: string;
   conversationId: string;
@@ -114,6 +140,10 @@ export interface Lead extends TenantEntity {
   nextActionId: string | null;
   closedAt: string | null;
   lostReason: OpportunityLostReason | null;
+  source: LeadSource;
+  sourceReferenceId: string | null;
+  priority: LeadPriority;
+  objections: SalesObjection[];
 }
 
 export enum OpportunityLostReason {
@@ -129,6 +159,7 @@ export enum ConversationChannel {
   WhatsApp = 'WHATSAPP_MOCK',
   Instagram = 'INSTAGRAM_MOCK',
   WebsiteForm = 'WEBSITE_FORM_MOCK',
+  Email = 'EMAIL_MOCK',
   Manual = 'MANUAL',
 }
 
@@ -309,6 +340,9 @@ export enum ActivityType {
   OpportunityWon = 'OPPORTUNITY_WON',
   OpportunityLost = 'OPPORTUNITY_LOST',
   OpportunityReopened = 'OPPORTUNITY_REOPENED',
+  RevenueAttributionVerified = 'REVENUE_ATTRIBUTION_VERIFIED',
+  ReactivationPrepared = 'REACTIVATION_PREPARED',
+  OwnerToolExecuted = 'OWNER_TOOL_EXECUTED',
 }
 
 export interface Activity extends TenantEntity {
@@ -537,12 +571,48 @@ export enum FollowUpScenario {
   QuoteResponse = 'QUOTE_RESPONSE',
   DepositRequest = 'DEPOSIT_REQUEST',
   OutstandingBalance = 'OUTSTANDING_BALANCE',
+  Reactivation = 'REACTIVATION',
 }
 
 export enum FollowUpStatus {
   Scheduled = 'SCHEDULED',
   Completed = 'COMPLETED',
   Cancelled = 'CANCELLED',
+}
+
+export enum FollowUpChannel {
+  WhatsApp = 'WHATSAPP',
+  Instagram = 'INSTAGRAM',
+  Email = 'EMAIL',
+  Manual = 'MANUAL',
+}
+
+export enum FollowUpOwner {
+  Assistant = 'ASSISTANT',
+  Human = 'HUMAN',
+}
+
+export enum FollowUpResult {
+  Pending = 'PENDING',
+  Sent = 'SENT',
+  ResponseReceived = 'RESPONSE_RECEIVED',
+  Stopped = 'STOPPED',
+  Failed = 'FAILED',
+}
+
+export enum FollowUpStopReason {
+  CustomerReplied = 'CUSTOMER_REPLIED',
+  HumanTakeover = 'HUMAN_TAKEOVER',
+  OpportunityClosed = 'OPPORTUNITY_CLOSED',
+  ConsentBlocked = 'CONSENT_BLOCKED',
+  ManualOverride = 'MANUAL_OVERRIDE',
+  StateChanged = 'STATE_CHANGED',
+}
+
+export interface FollowUpAttempt {
+  operationKey: string;
+  result: FollowUpResult.Sent | FollowUpResult.Failed;
+  attemptedAt: string;
 }
 
 export interface ScheduledFollowUp extends TenantEntity {
@@ -555,6 +625,20 @@ export interface ScheduledFollowUp extends TenantEntity {
   idempotencyKey: string;
   triggeringMessageId: string | null;
   reason: string;
+  sequenceKey: string;
+  sequenceStep: number;
+  channel: FollowUpChannel;
+  attemptCount: number;
+  attempts: FollowUpAttempt[];
+  nextAttemptAt: string | null;
+  lastAttemptAt: string | null;
+  lastResponseAt: string | null;
+  stopReason: FollowUpStopReason | null;
+  manualOverride: boolean;
+  owner: FollowUpOwner;
+  ownerTeamMemberId: string | null;
+  draftMessage: string | null;
+  result: FollowUpResult;
 }
 
 export enum RevenueStage {
@@ -565,14 +649,37 @@ export enum RevenueStage {
   Refunded = 'REFUNDED',
 }
 
+export enum RevenueAttributionKind {
+  Generated = 'GENERATED',
+  Recovered = 'RECOVERED',
+  Protected = 'PROTECTED',
+  Reactivated = 'REACTIVATED',
+}
+
+export enum RevenueAttributionStatus {
+  Unattributed = 'UNATTRIBUTED',
+  Candidate = 'CANDIDATE',
+  Verified = 'VERIFIED',
+  Rejected = 'REJECTED',
+}
+
 export interface RevenueEvent extends TenantEntity {
   contactId: string;
+  leadId: string;
+  conversationId: string;
+  leadSource: LeadSource;
   referenceType: PaymentReferenceType;
   referenceId: string;
   stage: RevenueStage;
   amountCents: number;
   causationId: string;
   correlationId: string;
+  attributionStatus: RevenueAttributionStatus;
+  attributionKind: RevenueAttributionKind | null;
+  contributingActivityIds: string[];
+  attributionOperationKey: string | null;
+  attributedAt: string | null;
+  attributedByTeamMemberId: string | null;
   occurredAt: string;
 }
 

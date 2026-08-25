@@ -19,12 +19,15 @@ function renderAt(path: string, harness = createHarness()) {
 
 describe('production product experience', () => {
   it.each([
-    ['/inbox', 'פניות'],
-    ['/actions', 'CLOSER עובד. נשאר רק להחליט.'],
+    ['/inbox', 'שיחות פעילות'],
+    ['/actions', 'CLOSER עובד. אתה רק מחליט.'],
+    ['/customers', 'לקוחות'],
+    ['/work', 'יומן ועבודות'],
+    ['/more', 'עוד'],
     ['/customer/biz-clinic-contact-new', 'אלכס מור'],
-  ])('renders the production route %s in Hebrew', (path, heading) => {
+  ])('renders the production route %s in Hebrew', async (path, heading) => {
     renderAt(path);
-    expect(screen.getByRole('heading', { name: heading, level: 1 })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: heading, level: 1 })).toBeInTheDocument();
     expect(screen.getByRole('navigation', { name: 'ניווט ראשי' })).toBeInTheDocument();
   });
 
@@ -38,11 +41,16 @@ describe('production product experience', () => {
     expect(screen.getByRole('heading', { name: heading, level: 1 })).toBeInTheDocument();
   });
 
-  it('shows grouped Today actions with real payment truth and correct links', () => {
+  it('shows grouped Today actions with real payment truth and correct links', async () => {
     renderAt('/actions');
+    await screen.findByRole('heading', { name: 'CLOSER עובד. אתה רק מחליט.', level: 1 });
     expect(screen.getByRole('heading', { name: 'צריך אותך עכשיו', level: 2 })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'היום', level: 2 })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'תשלומים', level: 2 })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'תמונת הכנסות', level: 2 })).toBeInTheDocument();
+    expect(
+      screen.getByText(/שיוך הכנסה שנוצרה או הוחזרה על ידי CLOSER יוצג רק אחרי חיבור מקורות מאומתים/),
+    ).toBeInTheDocument();
     expect(screen.getAllByText((content) => content.includes('315')).length).toBeGreaterThan(0);
     const mayaAction = screen.getByText('השיחה עם מאיה לוי דורשת טיפול').closest('li');
     expect(mayaAction).not.toBeNull();
@@ -52,8 +60,9 @@ describe('production product experience', () => {
     );
   });
 
-  it('names each Today region from its visible section heading', () => {
+  it('names each Today region from its visible section heading', async () => {
     renderAt('/actions');
+    await screen.findByRole('heading', { name: 'CLOSER עובד. אתה רק מחליט.', level: 1 });
 
     for (const name of ['צריך אותך עכשיו', 'היום', 'תשלומים']) {
       const heading = screen.getByRole('heading', { name, level: 2 });
@@ -61,8 +70,9 @@ describe('production product experience', () => {
     }
   });
 
-  it('uses customer-specific accessible names for repeated Today links', () => {
+  it('uses customer-specific accessible names for repeated Today links', async () => {
     renderAt('/actions');
+    await screen.findByRole('heading', { name: 'CLOSER עובד. אתה רק מחליט.', level: 1 });
 
     expect(screen.getByRole('link', { name: 'פתח שיחה עבור מאיה לוי' })).toHaveAttribute(
       'href',
@@ -74,7 +84,7 @@ describe('production product experience', () => {
     );
   });
 
-  it('presents a calm, complete Today empty state', () => {
+  it('presents a calm, complete Today empty state', async () => {
     const harness = createHarness();
     vi.spyOn(harness.service, 'productToday').mockReturnValue({
       asOf: '2026-08-12T12:00:00.000Z',
@@ -87,9 +97,22 @@ describe('production product experience', () => {
         informationCollected: 0,
         progressedCustomers: 0,
       },
+      revenue: {
+        validatedCollectedCents: 0,
+        collectionDueCents: 0,
+        openPipelineCents: 0,
+        bookedOpportunityCount: 0,
+        wonOpportunityCount: 0,
+        attribution: {
+          status: 'NOT_AVAILABLE',
+          generatedByCloserCents: null,
+          recoveredByCloserCents: null,
+        },
+      },
     });
 
     renderAt('/actions', harness);
+    await screen.findByRole('heading', { name: 'CLOSER עובד. אתה רק מחליט.', level: 1 });
 
     expect(screen.getByText('הכול מתקדם כרגע')).toBeInTheDocument();
     expect(screen.getByText('אין תורים או עבודות מתוכננות להיום.')).toBeInTheDocument();
@@ -97,36 +120,43 @@ describe('production product experience', () => {
     expect(screen.queryByRole('link', { name: /עבור/ })).not.toBeInTheDocument();
   });
 
-  it('keeps owner navigation lead-to-cash and hides engineering routes', () => {
+  it('keeps owner navigation lead-to-cash and hides engineering routes', async () => {
     renderAt('/actions');
+    await screen.findByRole('heading', { name: 'CLOSER עובד. אתה רק מחליט.', level: 1 });
     const navigation = screen.getByRole('navigation', { name: 'ניווט ראשי' });
 
-    for (const label of ['היום', 'לקוחות', 'יומן ועבודות', 'כסף', 'עוד']) {
-      expect(within(navigation).getByText(label)).toBeInTheDocument();
+    for (const [label, href] of [
+      ['היום', '/actions'],
+      ['לקוחות', '/customers'],
+      ['יומן ועבודות', '/work'],
+      ['כסף', '/money'],
+      ['עוד', '/more'],
+    ] as const) {
+      expect(within(navigation).getByRole('link', { name: label })).toHaveAttribute('href', href);
     }
     expect(within(navigation).queryByText('כלי פיתוח')).not.toBeInTheDocument();
     expect(within(navigation).queryByText('סביבת הדגמה')).not.toBeInTheDocument();
-    expect(within(navigation).queryByRole('link', { name: 'לקוחות' })).not.toBeInTheDocument();
   });
 
-  it('keeps the mixed Hebrew and English masked heading in logical reading order', () => {
+  it('keeps the mixed Hebrew and English masked heading in logical reading order', async () => {
     renderAt('/actions');
 
-    const heading = screen.getByRole('heading', {
-      name: 'CLOSER עובד. נשאר רק להחליט.',
+    const heading = await screen.findByRole('heading', {
+      name: 'CLOSER עובד. אתה רק מחליט.',
       level: 1,
     });
-    const glyphs = heading.querySelectorAll('text');
+    const words = heading.querySelectorAll('.masked-heading__word');
 
-    expect(glyphs[0]).toHaveAttribute('direction', 'ltr');
-    expect(glyphs[0]).toHaveAttribute('text-anchor', 'end');
-    expect(glyphs[1]).toHaveAttribute('direction', 'rtl');
-    expect(glyphs[1]).toHaveAttribute('text-anchor', 'start');
+    expect(Array.from(words).map((word) => word.textContent)).toEqual(['CLOSER', 'עובד.', 'אתה', 'רק', 'מחליט.']);
+    expect(words[0]).toHaveAttribute('data-direction', 'ltr');
+    expect(words[1]).toHaveAttribute('data-direction', 'rtl');
+    expect(heading.querySelector('svg text')).not.toBeInTheDocument();
     expect(screen.getAllByRole('main')).toHaveLength(1);
   });
 
-  it('falls back to the static ambient treatment when motion support is unavailable', () => {
+  it('falls back to the static ambient treatment when motion support is unavailable', async () => {
     renderAt('/actions');
+    await screen.findByRole('heading', { name: 'CLOSER עובד. אתה רק מחליט.', level: 1 });
 
     expect(document.querySelector('.molten-metal-container')).toHaveAttribute(
       'data-renderer',
@@ -135,7 +165,7 @@ describe('production product experience', () => {
     expect(document.querySelector('.molten-metal-container canvas')).not.toBeInTheDocument();
   });
 
-  it('keeps the ambient treatment static when reduced motion is requested', () => {
+  it('keeps the ambient treatment static when reduced motion is requested', async () => {
     const originalMatchMedia = window.matchMedia;
     const originalWebGl2 = window.WebGL2RenderingContext;
     Object.defineProperty(window, 'matchMedia', {
@@ -158,6 +188,7 @@ describe('production product experience', () => {
 
     try {
       renderAt('/actions');
+      await screen.findByRole('heading', { name: 'CLOSER עובד. אתה רק מחליט.', level: 1 });
       expect(document.querySelector('.molten-metal-container')).toHaveAttribute(
         'data-renderer',
         'static',
@@ -178,7 +209,20 @@ describe('production product experience', () => {
   it('switches the active demo business without exposing previous tenant actions', async () => {
     const user = userEvent.setup();
     renderAt('/actions');
+    await screen.findByRole('heading', { name: 'CLOSER עובד. אתה רק מחליט.', level: 1 });
     await user.selectOptions(screen.getByLabelText('עסק לדוגמה'), 'biz-detailing');
+    expect(screen.getAllByText('נורת׳סטאר דיטיילינג').length).toBeGreaterThan(0);
+    expect(screen.queryByText(/טיפול פנים/)).not.toBeInTheDocument();
+  });
+
+  it('leaves a tenant-specific customer route when the active business changes', async () => {
+    const user = userEvent.setup();
+    renderAt('/customer/biz-clinic-contact-handoff');
+
+    await user.selectOptions(screen.getByLabelText('עסק לדוגמה'), 'biz-detailing');
+
+    expect(await screen.findByRole('heading', { name: 'CLOSER עובד. אתה רק מחליט.', level: 1 })).toBeInTheDocument();
+    expect(screen.queryByText('הלקוח לא נמצא')).not.toBeInTheDocument();
     expect(screen.getAllByText('נורת׳סטאר דיטיילינג').length).toBeGreaterThan(0);
     expect(screen.queryByText(/טיפול פנים/)).not.toBeInTheDocument();
   });
@@ -194,6 +238,63 @@ describe('production product experience', () => {
     expect(screen.getByRole('button', { name: 'החזר את העוזר' })).toBeInTheDocument();
   });
 
+  it('navigates the real owner menu across work, money, and More routes', async () => {
+    const user = userEvent.setup();
+    renderAt('/actions');
+    await screen.findByRole('heading', { name: 'CLOSER עובד. אתה רק מחליט.', level: 1 });
+    const navigation = screen.getByRole('navigation', { name: 'ניווט ראשי' });
+
+    await user.click(within(navigation).getByRole('link', { name: 'יומן ועבודות' }));
+    expect(await screen.findByRole('heading', { name: 'יומן ועבודות', level: 1 })).toBeInTheDocument();
+    expect(within(navigation).getByRole('link', { name: 'יומן ועבודות' })).toHaveAttribute('aria-current', 'page');
+
+    await user.click(within(navigation).getByRole('link', { name: 'כסף' }));
+    expect(await screen.findByRole('heading', { name: /315.*₪|₪.*315/, level: 1 })).toBeInTheDocument();
+    expect(within(navigation).getByRole('link', { name: 'כסף' })).toHaveAttribute('aria-current', 'page');
+
+    await user.click(within(navigation).getByRole('link', { name: 'עוד' }));
+    expect(await screen.findByRole('heading', { name: 'עוד', level: 1 })).toBeInTheDocument();
+    expect(within(navigation).getByRole('link', { name: 'עוד' })).toHaveAttribute('aria-current', 'page');
+  });
+
+  it('moves from Customers to a Human Takeover workspace and its commercial conversation', async () => {
+    const user = userEvent.setup();
+    renderAt('/customers');
+
+    await user.click(screen.getByRole('link', { name: 'פתח את מאיה לוי' }));
+    expect(await screen.findByRole('heading', { name: 'מאיה לוי', level: 1 })).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'טיפול אנושי פעיל' })).toBeInTheDocument();
+    expect(screen.getByRole('navigation', { name: 'ניווט ראשי' }).querySelector('[aria-current="page"]')).toHaveTextContent('לקוחות');
+
+    await user.click(screen.getAllByRole('link', { name: 'פתח שיחה' })[0]!);
+    expect(await screen.findByRole('heading', { name: 'מאיה לוי', level: 2 })).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'שיחה פעילה' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'פתח לקוח: מאיה לוי' })).toHaveAttribute(
+      'href',
+      '/customer/biz-clinic-contact-handoff',
+    );
+  });
+
+  it('returns from a customer workspace to the Customers operating view', async () => {
+    const user = userEvent.setup();
+    renderAt('/customer/biz-clinic-contact-new');
+
+    await user.click(screen.getByRole('link', { name: 'כל הלקוחות' }));
+    expect(await screen.findByRole('heading', { name: 'לקוחות', level: 1 })).toBeInTheDocument();
+    expect(screen.getByRole('searchbox', { name: 'חיפוש לקוחות' })).toBeInTheDocument();
+  });
+
+  it('renders the direct Money route from validated commercial balances', () => {
+    renderAt('/money');
+
+    expect(screen.getByRole('heading', { name: /315.*₪|₪.*315/, level: 1 })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'ממתינים לגבייה', level: 2 })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'פתח תשלום של יובל רוזן' })).toHaveAttribute(
+      'href',
+      '/customer/biz-clinic-contact-completed',
+    );
+  });
+
   it('uses an ordinary conversation list with native buttons', () => {
     renderAt('/inbox');
 
@@ -206,15 +307,52 @@ describe('production product experience', () => {
   it('sends a mock business message from the inbox composer', async () => {
     const user = userEvent.setup();
     renderAt('/inbox?conversation=biz-clinic-conversation-waiting');
+    const sendButton = screen.getByRole('button', { name: 'שליחה' });
+    expect(sendButton).toHaveAttribute('aria-label', 'שליחה');
+    expect(sendButton).toBeDisabled();
     await user.type(screen.getByLabelText('כתיבת הודעה'), 'היי דנה, איזה יום יתאים לך?');
-    await user.click(screen.getByRole('button', { name: 'שליחה' }));
+    expect(sendButton).toBeEnabled();
+    await user.click(sendButton);
     expect(await screen.findByRole('status')).toHaveTextContent('ההודעה נשלחה.');
     expect(screen.getAllByText('היי דנה, איזה יום יתאים לך?').length).toBeGreaterThan(0);
+    expect(sendButton).toBeDisabled();
+  });
+
+  it('renders an explicit dark-system resume control for Human Takeover', () => {
+    renderAt('/inbox?conversation=biz-clinic-conversation-handoff');
+
+    expect(screen.getByText('הלקוח העלה תלונה שדורשת טיפול')).toBeInTheDocument();
+    expect(
+      screen.getByText('הלקוחה ביקשה לדבר עם בעלת העסק לאחר שהביעה חוסר שביעות רצון.'),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'החזר את העוזר' })).toHaveClass(
+      'handoff-resume-button',
+    );
+  });
+
+  it('keeps an assistant suggestion internal while Human Takeover is active', async () => {
+    const user = userEvent.setup();
+    const harness = createHarness();
+    const decision = await harness.service.receiveCustomerMessage(
+      'biz-clinic',
+      'biz-clinic-conversation-new',
+      'I want a real person',
+      { providerMessageId: 'app-test-human-request' },
+    );
+
+    renderAt('/inbox?conversation=biz-clinic-conversation-new', harness);
+    const draftButton = screen.getByRole('button', { name: 'פתח טיוטה פנימית לבדיקה' });
+    expect(screen.getByText('הלקוח ביקש לדבר עם אדם')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'החזר את העוזר' })).toBeInTheDocument();
+    await user.click(draftButton);
+    expect(screen.getByLabelText('כתיבת הודעה')).toHaveValue(decision.suggestedReply);
   });
 
   it('shows customer payment balance and no developer-only assistant fields', () => {
     renderAt('/customer/biz-clinic-contact-completed');
-    expect(screen.getByText('נותר לתשלום')).toBeInTheDocument();
+    const payment = screen.getByRole('heading', { name: 'תשלום', level: 2 }).closest('section');
+    expect(payment).not.toBeNull();
+    expect(within(payment!).getByText('נותר')).toBeInTheDocument();
     expect(screen.getAllByText((content) => content.includes('315') && content.includes('₪')).length).toBeGreaterThan(0);
     expect(screen.queryByText('Confidence')).not.toBeInTheDocument();
     expect(screen.queryByText('Tool request')).not.toBeInTheDocument();
@@ -249,8 +387,9 @@ describe('production product experience', () => {
     const user = userEvent.setup();
     const harness = renderAt('/customer/biz-clinic-contact-handoff');
     expect(screen.getByText('אתם מנהלים את השיחה עכשיו')).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'החזר את העוזר' }));
-    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('העוזר חזר לפעול.'));
+    expect(screen.getByText('הלקוח העלה תלונה שדורשת טיפול')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'החזר את CLOSER' }));
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('CLOSER חזר לפעול בשיחה.'));
     const conversation = harness.database.repositories.conversations.get(
       'biz-clinic',
       'biz-clinic-conversation-handoff',

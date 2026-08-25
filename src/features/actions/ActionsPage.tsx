@@ -11,10 +11,8 @@ import {
   MapPin,
   MessageCircle,
   Send,
-  Sparkles,
   UserRound,
   WalletCards,
-  Zap,
   type LucideIcon,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
@@ -218,7 +216,7 @@ export function ActionsPage() {
           </p>
           <MaskedHeading
             id="command-center-title"
-            text="CLOSER עובד. נשאר רק להחליט."
+            text="CLOSER עובד. אתה רק מחליט."
             src={liquidMetalHeading}
             tag="h1"
             reveal="rise"
@@ -239,16 +237,15 @@ export function ActionsPage() {
           <div className="command-orbit" aria-hidden="true">
             <span />
           </div>
-          <p>העסק מתקדם ברקע</p>
-          <strong><bdi dir="ltr">{today.activeOpportunityCount}</bdi> פניות פעילות</strong>
+          <p>כסף שנגבה ואומת</p>
+          <strong><bdi dir="ltr">{formatProductMoney(today.revenue.validatedCollectedCents, currency)}</bdi></strong>
           <div className="command-attention-count">
             <bdi dir="ltr">{ownerActionCount}</bdi>
-            <span>דברים צריכים אותך</span>
+            <span>דברים צריכים החלטה שלך</span>
           </div>
           <small>
-            {today.automation.preparedActions > 0
-              ? `CLOSER כבר הכין ${today.automation.preparedActions} צעדים להמשך`
-              : 'אין כרגע צעד אוטומטי שממתין לביצוע'}
+            <bdi dir="ltr">{formatProductMoney(today.revenue.openPipelineCents, currency)}</bdi>
+            {' '}בערך פתוח ידוע · <bdi dir="ltr">{today.activeOpportunityCount}</bdi> פניות פעילות
           </small>
         </div>
       </section>
@@ -349,29 +346,40 @@ export function ActionsPage() {
             )}
           </section>
 
-          <section className="command-panel command-autopilot" aria-labelledby="autopilot-heading">
+          <section className="command-panel command-revenue" aria-labelledby="revenue-heading">
             <header className="command-panel-heading">
-              <div className="command-panel-icon"><Zap aria-hidden="true" /></div>
+              <div className="command-panel-icon"><Banknote aria-hidden="true" /></div>
               <div>
-                <p>בלי שתצטרכי לרדוף</p>
-                <h2 id="autopilot-heading">CLOSER כבר מטפל</h2>
+                <p>כסף, לא הבטחות</p>
+                <h2 id="revenue-heading">תמונת הכנסות</h2>
               </div>
-              <Sparkles aria-hidden="true" className="command-autopilot-spark" />
             </header>
-            <dl className="command-automation-strip">
+            <dl className="command-revenue-strip">
               <div>
-                <dt>צעדים שהוכנו אוטומטית</dt>
-                <dd><bdi dir="ltr">{today.automation.preparedActions}</bdi></dd>
+                <dt>נגבה ואומת</dt>
+                <dd><bdi dir="ltr">{formatProductMoney(today.revenue.validatedCollectedCents, currency)}</bdi></dd>
               </div>
               <div>
-                <dt>לקוחות עם מידע שנאסף</dt>
-                <dd><bdi dir="ltr">{today.automation.informationCollected}</bdi></dd>
+                <dt>ערך פתוח ידוע</dt>
+                <dd><bdi dir="ltr">{formatProductMoney(today.revenue.openPipelineCents, currency)}</bdi></dd>
               </div>
               <div>
-                <dt>לקוחות שכבר התקדמו</dt>
-                <dd><bdi dir="ltr">{today.automation.progressedCustomers}</bdi></dd>
+                <dt>נסגרו ושולמו</dt>
+                <dd><bdi dir="ltr">{today.revenue.wonOpportunityCount}</bdi></dd>
               </div>
             </dl>
+            {today.revenue.attribution.status === 'AVAILABLE' ? (
+              <p className="command-attribution-note is-verified">
+                לפי אירועים שאומתו: CLOSER יצר{' '}
+                <bdi dir="ltr">{formatProductMoney(today.revenue.attribution.generatedByCloserCents ?? 0, currency)}</bdi>
+                {' '}והחזיר{' '}
+                <bdi dir="ltr">{formatProductMoney(today.revenue.attribution.recoveredByCloserCents ?? 0, currency)}</bdi>.
+              </p>
+            ) : (
+              <p className="command-attribution-note">
+                שיוך הכנסה שנוצרה או הוחזרה על ידי CLOSER יוצג רק אחרי חיבור מקורות מאומתים.
+              </p>
+            )}
           </section>
         </div>
       </div>

@@ -1,87 +1,71 @@
-# Product UX — Phase 4 implementation record
+# Product UX — Phase 4.2 owner experience
 
-## Phase 4.1B approval prototype
+CLOSER presents the owner with an operating loop, not a CRM to administer:
 
-`/actions` now carries one deliberately isolated Neo-Luxury Command Center direction. The first viewport combines a restrained ambient operating field, a single expressive identity line, the number of active opportunities, the number of owner decisions, and the beginning of the decision queue. Human Takeover is ranked first; balances remain separate and actionable; Today and proof of prepared automation work follow below.
+**what CLOSER already did → what it is doing now → what needs owner judgment → what happens next.**
 
-The owner hierarchy shown in the prototype is **Today → Customers → Calendar / Jobs → Money → More**. Only Today is active during this approval milestone. Engineering routes are absent from owner navigation but remain directly available. Inbox and Customer Workspace retain their verified Phase 4 implementation until the product owner explicitly approves or rejects this direction.
-
-The prototype uses a tenant-scoped presentation projection only. It does not create analytics, mutate commercial records, or treat automatic preparation as completed work. Its date and relative ages come from the same `ProductTodayView.asOf` value used to derive the day’s commercial truth.
-
-> **Status:** This document records the verified Phase 4 interface as implemented. It is not the approved future product hierarchy or final visual direction. [CLOSER Product Bible](PRODUCT_BIBLE.md) is authoritative: Today / Command Center leads the product, Customers / Opportunities carry the commercial story, and Inbox becomes contextual rather than product-defining. A new direction must begin with one owner-reviewed prototype before propagation.
-
-Phase 4 gives CLOSER a production product layer around three questions a service-business owner asks repeatedly: what needs attention, who is waiting, and what is happening with this customer. The interface is Hebrew-first, action-first, and intentionally avoids CRM and AI terminology.
+The normal owner application is one coherent Hebrew-first system across Today, Customers, Customer Workspace, Conversation, Calendar/Jobs, Money, and More. WhatsApp is conversation context; the customer’s commercial journey is the product.
 
 ## Navigation
 
-Desktop navigation is a graphite RTL rail. The primary product destinations are deliberately limited to:
+- **היום** (`/actions`) — owner decisions, today’s commitments, balances, and quiet proof of autonomous work.
+- **לקוחות** (`/customers`) — customer/opportunity operating view. `/customer/:id` and `/inbox` remain active within this section.
+- **יומן ועבודות** (`/work`) — appointment and job commitments through one configured journey view.
+- **כסף** (`/money`) — validated money waiting and settled commercial truth.
+- **עוד** (`/more`) — actual business, team, automation-boundary, communication, and help context.
 
-- **היום** (`/actions`) — the owner’s action center and default route.
-- **פניות** (`/inbox`) — the business conversation workspace.
-- **Customer Workspace** (`/customer/:id`) — entered from an action or conversation rather than occupying permanent navigation.
+Back/forward navigation, direct routes, refresh, desktop links, and mobile links use ordinary browser routing. Engineering screens are direct-only and never appear in this menu.
 
-Internal demo, appointment, quote/job, and debug routes remain reachable in a visually secondary tools area. Mobile uses bottom navigation for Today, Inquiries, and More; it does not shrink the desktop rail.
+## Today / Command Center
 
-## Today
+The first viewport establishes: **validated money → how many things need the owner → the first decision.** Human Takeover is sorted first. Cards are denser than the approval prototype, and supporting Today/Money/revenue-truth areas sit below the decision queue. Empty states are short explanatory rows.
 
-Today answers “what should I deal with now?” before showing supporting context. It has three groups:
+Today leads with net validated collection and known open commercial value, then the owner decision count. The lower revenue panel separates validated collection, open value, and paid/won count, and states that generated/recovered attribution is unavailable until verified sources are connected. The ambient identity is strongest here and absent from routine pages.
 
-1. **דורש טיפול** — one primary pending action per active opportunity, with human review visually prioritized.
-2. **היום** — validated appointments and jobs scheduled for the current business day.
-3. **תשלומים** — real remaining balances that require collection.
+## Customers
 
-Rows show the customer, a plain-language reason, a useful age or real amount, and one clear action. They do not show pipeline labels, confidence, weighted value, or analytics. Closed opportunities and stale actions are absent. Empty states explain that there is nothing requiring attention rather than presenting zero-value KPI cards.
+Customers is not a contacts table. Search and compact filters organise people by useful commercial states: needs owner, ready, waiting, in progress, collection, or closed. Each row exposes service context, the current grounded action/state, verified amount when useful, and one route into the journey.
 
-## Inbox
-
-Inbox is a service-business workspace, not a WhatsApp clone. Desktop uses a conversation list and one active thread. The list emphasizes who wrote, the latest useful context, the customer’s current stage in plain language, and whether the owner must take over.
-
-The active thread includes:
-
-- readable customer and business message bubbles;
-- one compact “מה כדאי לעשות עכשיו” recommendation;
-- a suggested response only when it is safe and useful;
-- an unmistakable Human Takeover banner with explicit Resume Assistant control;
-- direct access to the Customer Workspace.
-
-On mobile, selecting a conversation replaces the list with the thread and provides a clear RTL back action. The message composer remains reachable above the bottom navigation without horizontal overflow.
+The same presentation contract supports appointment-service and quote/job businesses through service workflow configuration, never a business-name branch.
 
 ## Customer Workspace
 
-Customer Workspace is the production source of truth for one customer. Its header establishes identity, selected service, current human-readable state, and primary action. The page then presents the commercial story rather than exposing separate domain entities:
+The workspace opens with identity, service, commercial state, Human Takeover when relevant, and one primary next action. It then tells the customer story:
 
-- current appointment or quote/job;
-- recent conversation context;
-- validated total, collected amount, refund information, and remaining balance;
-- useful structured customer facts;
-- meaningful business activity in chronological context;
-- communication consent and Human Takeover state.
+1. lead-to-cash journey position;
+2. current appointment or quote/job;
+3. useful known and missing information;
+4. recent conversation context;
+5. meaningful activity;
+6. validated total, collected, refund, and remaining balance;
+7. independent operational and marketing consent.
 
-An outstanding balance is explicit; completion never implies collection. Closed-won customers receive a calm completed state with no stale sales action. Closed-lost customers may be reopened through the existing validated application use case.
+Customer claims do not establish price, booking, or payment truth. The UI displays those only from validated application/domain state. Completion remains visibly distinct from full collection.
 
-## Presentation boundary
+## Conversation
 
-`ProductReadService` builds tenant-scoped read models for Today, Inbox, and Customer Workspace from repository and commercial-journey truth. `productCopy` maps internal enums and demo labels to concise Hebrew. React renders these projections and invokes validated `CloserService` use cases; it does not calculate balances, infer commercial state, reconcile actions, or read persistence directly.
+Conversation is a commercial decision workspace, not a WhatsApp clone. The list shows customer, useful context, journey state, and owner exceptions. The active thread keeps customer identity, current service/stage, Human Takeover, recommended next action, Customer Workspace link, messages, and composer together.
 
-Production screens never expose raw confidence, detected intent, requested tools, internal reason codes, entity IDs, operation keys, repository data, or JSON. Those remain available in `/debug` for engineering work.
+On mobile the list and thread are separate views. Back restores focus to the selected conversation. Human Takeover blocks assistant sending until the explicit Resume control is used; an owner can still send an operational reply.
 
-## RTL and mixed content
+## Calendar / Jobs
 
-The production shell owns `dir="rtl"`. Visual order follows Hebrew reading patterns without blindly mirroring content semantics. Times, phone numbers, email addresses, currency fragments, and English service terms are directionally isolated. Directional chevrons and arrows are chosen for RTL navigation; message sides express author, not language direction.
+`/work` is a CLOSER operational schedule rather than a general calendar. Today is dominant; unscheduled work, upcoming work, and recent completion follow only when populated. Each item combines real schedule time, customer, service/job, status, and deposit/balance context.
 
-## Responsive behavior
+## Money
 
-Mobile is a distinct product layout:
+Money answers “what verified money is waiting?” with a single total and customer-level balances. “Due now” means an unpaid required deposit or a remaining balance after completion; it does not treat an unaccepted/declined quote or the full future balance as immediately collectible. Refund context remains visible. Quotes and customer payment claims are never counted as cash.
 
-- persistent bottom navigation replaces the sidebar;
-- Today actions stack into scannable rows;
-- Inbox uses list-to-thread navigation rather than compressed columns;
-- payment state appears early in Customer Workspace;
-- primary actions remain reachable and touch-friendly;
-- long Hebrew and mixed-direction content wrap without clipping.
+## More
 
-Desktop favors width for scanning and conversation context but avoids a permanent third Inbox column and card-heavy dashboards.
+More exposes current owner-facing truth only: active business identity, active team, safe automation boundaries, accepted communication/payment context, and help. Future integrations/settings are described as unavailable rather than rendered as dead controls. No engineering routes are exposed.
 
-## Accessibility target
+## Production versus engineering information
 
-The production layer uses semantic landmarks, ordered information, visible focus, native controls, descriptive labels, status announcements, strong contrast, and reduced-motion support. Human control, payment, and close states are always expressed in text as well as color. Visual QA complements, but does not replace, keyboard, focus, screen-reader-name, and responsive-reflow testing.
+Owner routes never expose confidence scores, intent/reason codes, provider/tool names, JSON, operation keys, repository IDs, or raw memory. `/debug` deliberately retains those details for deterministic engineering and future provider integration.
+
+## Accessibility and mobile posture
+
+The owner shell uses semantic landmarks, labelled native controls, visible focus, route focus handoff, textual state descriptions, reduced-motion behavior, dynamic viewport sizing, safe-area padding, and minimum mobile touch targets. Mixed Hebrew/English, phone, email, vehicle, time, and currency data are isolated rather than globally forced into one direction.
+
+Browser responsive QA covers 1440×1024, 1100×760, 393×852, and 375×812, including multiple scroll positions. Physical Safari remains a separate device acceptance pass; the implementation is WebKit-defensive but is not represented as a native-Safari measurement.

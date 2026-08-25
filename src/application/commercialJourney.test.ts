@@ -15,6 +15,7 @@ import {
   QuoteStatus,
 } from '../domain/entities';
 import { LocalDatabase, MemoryStorageAdapter, STORAGE_KEY } from '../infrastructure/persistence';
+import { SCHEMA_VERSION } from '../repositories/contracts';
 import { DEMO_DATABASE } from '../data/demoData';
 import { MockAIProvider } from '../integrations/ai/MockAIProvider';
 import { MockWhatsAppProvider } from '../integrations/messaging/MockWhatsAppProvider';
@@ -281,7 +282,7 @@ describe('Phase 3 end-to-end commercial journeys', () => {
     const restored = new CloserService(restoredDatabase, new MockAIProvider(), new MockWhatsAppProvider());
     expect(restoredDatabase.repositories.quotes.get(HOME, quote.id)?.status).toBe(QuoteStatus.Sent);
     expect(restored.actionCenter(HOME).some((action) => action.leadId === `${HOME}-lead-new` && action.actionType === NextActionType.FollowUpQuote)).toBe(true);
-    expect(JSON.parse(storage.read(STORAGE_KEY) ?? '{}').schemaVersion).toBe(3);
+    expect(JSON.parse(storage.read(STORAGE_KEY) ?? '{}').schemaVersion).toBe(SCHEMA_VERSION);
   });
 
   it('keeps complete journey projections tenant scoped', () => {

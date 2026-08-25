@@ -9,9 +9,14 @@ import {
   ConversationState,
   CustomerFactKey,
   FollowUpScenario,
+  FollowUpChannel,
+  FollowUpOwner,
+  FollowUpResult,
   FollowUpStatus,
   HandoffReason,
   JobStatus,
+  LeadPriority,
+  LeadSource,
   KnowledgeTopic,
   LeadStatus,
   MessageAuthor,
@@ -24,6 +29,7 @@ import {
   PaymentReferenceType,
   PaymentStatus,
   QuoteStatus,
+  RevenueAttributionStatus,
   RevenueStage,
   TeamRole,
   Weekday,
@@ -180,6 +186,42 @@ export function createDemoDatabase(): DatabaseSchema {
       taxRateBasisPoints: 0,
       defaultDepositBasisPoints: 2500,
       paymentMethods: ['Card', 'Bank transfer', 'Cash'],
+      reactivationInactivityDays:
+        config.kind === BusinessKind.AutoDetailing
+          ? 45
+          : config.kind === BusinessKind.HomeServices
+            ? 30
+            : 60,
+      followUpCadenceHours:
+        config.kind === BusinessKind.AutoDetailing
+          ? {
+              [FollowUpScenario.PriceInquiry]: [4, 24, 72],
+              [FollowUpScenario.BookingConfirmation]: [4, 24],
+              [FollowUpScenario.MissingInformation]: [4, 24, 72],
+              [FollowUpScenario.QuoteResponse]: [24, 72, 168],
+              [FollowUpScenario.DepositRequest]: [24, 72],
+              [FollowUpScenario.OutstandingBalance]: [24, 72],
+              [FollowUpScenario.Reactivation]: [24, 96],
+            }
+          : config.kind === BusinessKind.HomeServices
+            ? {
+                [FollowUpScenario.PriceInquiry]: [4, 24, 96],
+                [FollowUpScenario.BookingConfirmation]: [4, 24],
+                [FollowUpScenario.MissingInformation]: [2, 24, 96],
+                [FollowUpScenario.QuoteResponse]: [24, 96, 168],
+                [FollowUpScenario.DepositRequest]: [24, 72],
+                [FollowUpScenario.OutstandingBalance]: [24, 72],
+                [FollowUpScenario.Reactivation]: [24, 120],
+              }
+            : {
+                [FollowUpScenario.PriceInquiry]: [4, 24, 72],
+                [FollowUpScenario.BookingConfirmation]: [2, 24, 72],
+                [FollowUpScenario.MissingInformation]: [4, 24, 72],
+                [FollowUpScenario.QuoteResponse]: [24, 72, 168],
+                [FollowUpScenario.DepositRequest]: [24, 72],
+                [FollowUpScenario.OutstandingBalance]: [24, 72],
+                [FollowUpScenario.Reactivation]: [24, 168],
+              },
     });
     businessKnowledge.push({
       ...base({ id: `${config.id}-knowledge`, businessId: config.id }),
@@ -339,6 +381,10 @@ export function createDemoDatabase(): DatabaseSchema {
         nextActionId: isClosed ? null : actionId,
         closedAt: isClosed ? DEMO_NOW : null,
         lostReason: isClosed ? OpportunityLostReason.NoLongerInterested : null,
+        source: LeadSource.WhatsApp,
+        sourceReferenceId: `mock-${config.id}-${key}`,
+        priority: isHandoff ? LeadPriority.High : LeadPriority.Normal,
+        objections: [],
       });
       if (!isClosed) {
         nextActions.push({
@@ -375,6 +421,20 @@ export function createDemoDatabase(): DatabaseSchema {
             idempotencyKey: `${conversationId}:${FollowUpScenario.OutstandingBalance}:seed`,
             triggeringMessageId: null,
             reason: 'Request the remaining payment for completed work.',
+            sequenceKey: FollowUpScenario.OutstandingBalance,
+            sequenceStep: 0,
+            channel: FollowUpChannel.WhatsApp,
+            attemptCount: 0,
+            attempts: [],
+            nextAttemptAt: '2026-08-13T08:00:00.000Z',
+            lastAttemptAt: null,
+            lastResponseAt: null,
+            stopReason: null,
+            manualOverride: false,
+            owner: FollowUpOwner.Assistant,
+            ownerTeamMemberId: null,
+            draftMessage: null,
+            result: FollowUpResult.Pending,
           });
         }
       }
@@ -416,7 +476,7 @@ export function createDemoDatabase(): DatabaseSchema {
       ...base({ id: `${config.id}-handoff-1`, businessId: config.id }),
       conversationId: `${config.id}-conversation-handoff`,
       reason: HandoffReason.Complaint,
-      detail: 'Customer asked to speak with the owner.',
+      detail: 'הלקוחה ביקשה לדבר עם בעלת העסק לאחר שהביעה חוסר שביעות רצון.',
       startedAt: DEMO_NOW,
       resolvedAt: null,
       startedBy: 'ASSISTANT',
@@ -458,6 +518,9 @@ export function createDemoDatabase(): DatabaseSchema {
       addDeposit(
         config.id,
         completedContactId,
+        completedLeadId,
+        `${config.id}-conversation-completed`,
+        LeadSource.WhatsApp,
         PaymentReferenceType.Appointment,
         appointmentId,
         Math.round(totalCents * 0.25),
@@ -467,12 +530,21 @@ export function createDemoDatabase(): DatabaseSchema {
       revenueEvents.push({
         ...base({ id: `${appointmentId}-completed-event`, businessId: config.id }),
         contactId: completedContactId,
+        leadId: completedLeadId,
+        conversationId: `${config.id}-conversation-completed`,
+        leadSource: LeadSource.WhatsApp,
         referenceType: PaymentReferenceType.Appointment,
         referenceId: appointmentId,
         stage: RevenueStage.Completed,
         amountCents: totalCents,
         causationId: `${appointmentId}:complete`,
         correlationId: appointmentId,
+        attributionStatus: RevenueAttributionStatus.Unattributed,
+        attributionKind: null,
+        contributingActivityIds: [],
+        attributionOperationKey: null,
+        attributedAt: null,
+        attributedByTeamMemberId: null,
         occurredAt: DEMO_NOW,
       });
     } else {
@@ -511,6 +583,9 @@ export function createDemoDatabase(): DatabaseSchema {
       addDeposit(
         config.id,
         completedContactId,
+        completedLeadId,
+        `${config.id}-conversation-completed`,
+        LeadSource.WhatsApp,
         PaymentReferenceType.Job,
         jobId,
         Math.round(totalCents * 0.25),
@@ -520,12 +595,21 @@ export function createDemoDatabase(): DatabaseSchema {
       revenueEvents.push({
         ...base({ id: `${jobId}-completed-event`, businessId: config.id }),
         contactId: completedContactId,
+        leadId: completedLeadId,
+        conversationId: `${config.id}-conversation-completed`,
+        leadSource: LeadSource.WhatsApp,
         referenceType: PaymentReferenceType.Job,
         referenceId: jobId,
         stage: RevenueStage.Completed,
         amountCents: totalCents,
         causationId: `${jobId}:complete`,
         correlationId: jobId,
+        attributionStatus: RevenueAttributionStatus.Unattributed,
+        attributionKind: null,
+        contributingActivityIds: [],
+        attributionOperationKey: null,
+        attributedAt: null,
+        attributedByTeamMemberId: null,
         occurredAt: DEMO_NOW,
       });
     }
@@ -589,6 +673,9 @@ function qualificationFields(kind: BusinessKind): CustomerFactKey[] {
 function addDeposit(
   businessId: string,
   contactId: string,
+  leadId: string,
+  conversationId: string,
+  leadSource: LeadSource,
   referenceType: PaymentReferenceType,
   referenceId: string,
   amountCents: number,
@@ -611,12 +698,21 @@ function addDeposit(
   revenueEvents.push({
     ...base({ id: `${paymentId}-event`, businessId }),
     contactId,
+    leadId,
+    conversationId,
+    leadSource,
     referenceType,
     referenceId,
     stage: RevenueStage.Collected,
     amountCents,
     causationId: paymentId,
     correlationId: referenceId,
+    attributionStatus: RevenueAttributionStatus.Unattributed,
+    attributionKind: null,
+    contributingActivityIds: [],
+    attributionOperationKey: null,
+    attributedAt: null,
+    attributedByTeamMemberId: null,
     occurredAt: DEMO_NOW,
   });
 }

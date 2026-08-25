@@ -18,6 +18,7 @@ import {
 import { createHarness } from '../../test/harness';
 
 const CLINIC = 'biz-clinic';
+const DETAILING = 'biz-detailing';
 const COMPLETED_CONTACT = `${CLINIC}-contact-completed`;
 const COMPLETED_APPOINTMENT = `${CLINIC}-appointment-completed`;
 
@@ -249,5 +250,95 @@ describe('ProductReadService', () => {
     });
 
     expect(service.productCustomer(CLINIC, contactId)?.serviceName).toBe('טיפול פנים קלאסי');
+  });
+
+  it('keeps Customers, schedule, and Money read models tenant scoped', () => {
+    const { service, database } = createHarness();
+    const clinicContactIds = new Set(database.repositories.contacts.list(CLINIC).map((contact) => contact.id));
+    const otherContactIds = new Set(database.repositories.contacts.list('biz-detailing').map((contact) => contact.id));
+
+    const customers = service.productCustomers(CLINIC).customers;
+    const schedule = service.productSchedule(CLINIC).items;
+    const money = service.productMoney(CLINIC).items;
+
+    expect(customers.every((customer) => clinicContactIds.has(customer.contactId))).toBe(true);
+    expect(schedule.every((item) => clinicContactIds.has(item.contactId))).toBe(true);
+    expect(money.every((item) => clinicContactIds.has(item.contactId))).toBe(true);
+    expect(customers.some((customer) => otherContactIds.has(customer.contactId))).toBe(false);
+    expect(schedule.some((item) => otherContactIds.has(item.contactId))).toBe(false);
+    expect(money.some((item) => otherContactIds.has(item.contactId))).toBe(false);
+  });
+
+  it('surfaces Human Takeover first and keeps the verified balance in owner read models', () => {
+    const { service } = createHarness();
+
+    const customers = service.productCustomers(CLINIC).customers;
+    const money = service.productMoney(CLINIC);
+
+    expect(customers[0]).toMatchObject({
+      contactId: `${CLINIC}-contact-handoff`,
+      group: 'NEEDS_OWNER',
+      automationStopped: true,
+    });
+    expect(money.waitingTotalCents).toBe(31_500);
+    expect(money.items.find((item) => item.contactId === COMPLETED_CONTACT)).toMatchObject({
+      totalCents: 42_000,
+      collectedCents: 10_500,
+      remainingBalanceCents: 31_500,
+      collectionDueCents: 31_500,
+    });
+  });
+
+  it('reports only validated financial truth and leaves CLOSER attribution unavailable', () => {
+    const { service } = createHarness();
+
+    expect(service.productRevenueOverview(CLINIC)).toEqual({
+      validatedCollectedCents: 10_500,
+      collectionDueCents: 31_500,
+      openPipelineCents: 42_000,
+      bookedOpportunityCount: 0,
+      wonOpportunityCount: 0,
+      attribution: {
+        status: 'NOT_AVAILABLE',
+        generatedByCloserCents: null,
+        recoveredByCloserCents: null,
+      },
+    });
+    expect(service.productRevenueOverview(DETAILING).validatedCollectedCents).toBe(30_000);
+  });
+
+  it('does not present a declined quote as money due for collection', () => {
+    const { service } = createHarness();
+    const baselineDue = service.productMoney(DETAILING).waitingTotalCents;
+    const created = service.createCustomerOpportunity({
+      businessId: DETAILING,
+      displayName: 'Declined quote customer',
+    });
+    const quote = service.createQuoteDraft({
+      businessId: DETAILING,
+      contactId: created.contact.id,
+      leadId: created.lead.id,
+      items: [{ id: 'declined-item', description: 'PPF', quantity: 1, unitPriceCents: 80_000 }],
+      operationKey: 'declined-money-read-model',
+    });
+
+    service.sendQuote(DETAILING, quote.id);
+    service.declineQuote(DETAILING, quote.id);
+
+    const money = service.productMoney(DETAILING);
+    expect(money.waitingTotalCents).toBe(baselineDue);
+    expect(money.items.find((item) => item.leadId === created.lead.id)).toMatchObject({
+      remainingBalanceCents: 0,
+      collectionDueCents: 0,
+      leadStatus: LeadStatus.Lost,
+    });
+  });
+
+  it('projects appointment and quote/job work through the same schedule contract', () => {
+    const { service } = createHarness();
+
+    expect(service.productSchedule(CLINIC).items.some((item) => item.kind === 'APPOINTMENT')).toBe(true);
+    expect(service.productSchedule('biz-detailing').items.some((item) => item.kind === 'JOB')).toBe(true);
+    expect(service.productSchedule('biz-home').items.some((item) => item.kind === 'JOB')).toBe(true);
   });
 });

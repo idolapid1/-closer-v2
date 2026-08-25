@@ -201,15 +201,11 @@ The central validation questions are: Did the business miss fewer customers, clo
 
 ## Visual and experience direction
 
-The Phase 4 interface is a technically verified implementation baseline, not an owner-approved final production direction. It is too white, plain, generic, CRM-like, inbox-oriented, and low in perceived premium value to propagate as the final system.
+The product owner approved the **Neo-Luxury Autonomous Business OS** direction as the foundation for propagation in Phase 4.2. The normal owner application uses near-black/graphite foundations, deep navy surfaces, restrained electric indigo/violet accents, controlled glow, precise type hierarchy, compact owner actions, and excellent mobile behavior.
 
-The next exploration should test a **Neo Luxury Command Center** direction: graphite or near-black foundations, deep navy surfaces, restrained electric indigo/blue/violet accents, controlled glow, refined depth, premium typography and actions, subtle motion, strong hierarchy, and excellent mobile behavior.
+This is not permission to turn every screen into a dark dashboard or shader showcase. Today carries the strongest atmospheric identity; customer, conversation, schedule, money, and settings views use quieter operational materials. Visual effects must support comprehension and action.
 
-Visual effects must support comprehension and action. React Bits may be evaluated selectively later for a premium button, controlled glow, navigation, subtle list movement, spotlight surface, or transition; the product must not become an animation demo.
-
-The design rule is: first decide what the owner should understand, then what the owner should do, then how it should look.
-
-Codex may review UX and visual quality but may not approve a production visual direction on behalf of the product owner. A major redesign must begin with one representative Home / Command Center screen, be reviewed by the owner on real desktop and mobile, and propagate only after explicit approval.
+The design rule remains: first decide what the owner should understand, then what the owner should do, then how it should look. Future major direction changes still require explicit product-owner approval; implementation or code review is not visual approval.
 
 ## Verified engine to preserve
 
@@ -221,10 +217,10 @@ Future presentation work must build on these boundaries rather than rebuilding t
 
 The recommended sequence is:
 
-1. Product reset and Product Bible.
-2. New Home / Command Center prototype.
-3. Product-owner visual approval on desktop and mobile.
-4. Production UX system propagation.
+1. Product reset and Product Bible. **Complete.**
+2. New Home / Command Center prototype. **Complete.**
+3. Product-owner visual approval for the foundation. **Complete.**
+4. Production UX system propagation. **Complete in Phase 4.2.**
 5. Production backend, authentication, and server tenant boundary.
 6. Durable database, event ingestion, and jobs.
 7. WhatsApp Business Platform integration.

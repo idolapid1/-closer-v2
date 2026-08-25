@@ -1,17 +1,17 @@
-# CLOSER v2 — Phase 4.1B visual approval prototype
+# CLOSER v2 — revenue operating-system foundation
 
 CLOSER is a **lead-to-cash autopilot for service businesses**: it moves every inquiry toward the next best validated action until the customer books or approves, completes the service, and pays. The authoritative direction is the [CLOSER Product Bible](docs/PRODUCT_BIBLE.md).
 
-Phase 4.1B implements one representative Neo-Luxury **Today / Command Center** at `/actions`. It is a product-owner visual approval gate, not an approved design system. Inbox, Customer Workspace, engineering routes, and the verified Phase 1–3 engine remain intact and have not adopted this visual language.
+Phase 4.2 propagates the approved Neo-Luxury foundation across the complete normal owner application. Today, Customers, Customer Workspace, Conversation, Calendar/Jobs, Money, and More now share one dark Hebrew-first operating environment. The verified Phase 1–3 commercial engine remains the source of truth; `/debug` and the other engineering routes deliberately keep their utilitarian presentation.
 
-This is an internal, local-only engineering build. It uses fictional data, deterministic mock AI and messaging providers, and versioned browser storage. It connects to no external API and contains no secrets.
+This is an internal, local-only engineering build. It uses fictional data, deterministic mock AI, messaging, and inbound-connector providers, and versioned browser storage. It connects to no external API and contains no secrets.
 
 ## Requirements
 
 - Node.js 22 LTS or 24 LTS (the verified build uses Node 24.19.0)
 - npm 10 or newer
 
-Node 26 is intentionally outside the current supported range: its experimental global Web Storage getter can shadow jsdom's `localStorage` in Vitest when no `--localstorage-file` is configured. Use a supported LTS runtime rather than changing the shared test setup.
+Node 26 is intentionally outside the current supported range. Node's experimental global Web Storage getter can shadow jsdom's `localStorage`; the repository test commands disable that Node-only experiment so jsdom remains the browser test environment. The shared test setup is not patched or polyfilled.
 
 ## Run locally
 
@@ -20,7 +20,7 @@ npm install
 npm run dev
 ```
 
-Vite prints the local URL, normally `http://localhost:5173`. The default route opens **Today** at `/actions`; use `/inbox` for customer inquiries and `/customer/:id` for the unified Customer Workspace. `/debug` preserves the Conversation Simulator. The business selector switches among the three deterministic clinic, detailing, and home-services tenants.
+Vite prints the local URL, normally `http://localhost:5173`. The default route opens **Today** at `/actions`. The owner menu links to `/customers`, `/work`, `/money`, and `/more`; `/customer/:id` and `/inbox` provide the journey and conversation contexts. `/debug` preserves the Conversation Simulator. The business selector switches among the three deterministic clinic, detailing, and home-services tenants.
 
 ## Quality commands
 
@@ -35,16 +35,17 @@ npm audit
 
 `npm run verify` runs lint, strict TypeScript checking, all Vitest tests, and the production build in sequence.
 
-## Owner approval prototype
+## Owner application
 
-- `/actions` — Neo-Luxury Command Center with operating state, human-prioritized decisions, Today, real balances, and tenant-scoped proof of prepared automation work
+- `/actions` — revenue-first Command Center with validated collection, known open value, human-prioritized decisions, Today, and real balances
+- `/customers` — customer/opportunity operating view grouped by the commercial state that matters now
+- `/customer/:id` — one customer’s appointment or quote/job journey, action, context, money, consent, and activity
+- `/inbox` — commercial conversation context with customer journey, Human Takeover, grounded recommendation, and composer
+- `/work` — configured appointment/job operational schedule
+- `/money` — verified balances and collected truth
+- `/more` — current business, team, automation-boundary, communication, and help context
 
-The open-source `MaskedHeading` and `MoltenMetal` implementations supplied for this milestone are adapted locally with TypeScript, Hebrew/RTL handling, reduced-motion fallbacks, WebGL lifecycle cleanup, and a deliberate mobile GPU budget. `gsap` and `ogl` are the only added runtime dependencies. No React Bits Pro code, registry, license key, or MCP is used.
-
-## Preserved Phase 4 routes
-
-- `/inbox` — existing split-view business inbox
-- `/customer/:id` — existing unified customer workspace
+The open-source `MaskedHeading` and `MoltenMetal` implementations are adapted locally with TypeScript, Hebrew/RTL handling, reduced-motion fallbacks, WebGL lifecycle cleanup, and a deliberate mobile GPU budget. Today is lazy-loaded so GSAP/OGL do not inflate routine owner routes. Visible MaskedHeading text uses normal DOM glyph shaping rather than SVG text, fixing the WebKit Hebrew reversal class without reversing strings. `gsap` and `ogl` are the only added runtime dependencies. No React Bits Pro code, registry, license key, or proprietary implementation is used.
 
 ## Engineering routes
 
@@ -55,15 +56,19 @@ The open-source `MaskedHeading` and `MoltenMetal` implementations supplied for t
 
 ## Architecture and trust boundary
 
-Domain entities and rules are pure TypeScript. `CloserService` is the mutation boundary. `CommercialJourneyService` derives opportunity totals, collection, stage, relationships, and one action from domain truth; `ActivityTimelineService` records tenant-scoped idempotent business events. `ProductReadService` builds tenant-scoped presentation models for the three production screens, while `productCopy` translates internal states into plain Hebrew. Focused conversation services retain the Phase 2 trust boundary.
+Domain entities and rules are pure TypeScript. `CloserService` is the mutation boundary. `CommercialJourneyService` derives opportunity totals, collection, stage, relationships, and one action from domain truth; `ActivityTimelineService` records tenant-scoped idempotent business events. `ProductReadService` builds tenant-scoped presentation models for Today, Inbox, Customers, Customer Workspace, Work, Money, and revenue truth, while `productCopy` translates internal states into plain Hebrew. Focused conversation services retain the Phase 2 trust boundary.
+
+Revenue presentation is deliberately conservative. Validated collection is net collected payments after refunds. Money due now is limited to a required deposit or a completed-service balance. Known open value is not cash. Revenue generated or recovered by CLOSER remains `null` until a collected RevenueEvent is explicitly verified against tenant-matched business activities; refunds reduce verified attribution.
+
+The persisted sales context records source, external source reference, priority, and typed objections on the existing Lead opportunity. Follow-up records carry vertical cadence, sequence, channel, attempts, owner, draft, result, stop reason, and idempotency. Reactivation is owner-approved, marketing-consent gated, and scheduled rather than sent immediately. The Owner Copilot boundary exposes tenant-authorized read tools and requires explicit approval for business-changing tools. WhatsApp, Instagram, website-form, and email connector contracts have deterministic fixtures; all production connectors remain disabled.
 
 The AI provider is untrusted and has no repository, network, clock, or mutation access. The application reconstructs auto-sent Level 1/2 replies from validated knowledge/tool results. Appointment, quote, deposit, payment, and scheduling changes are proposals until the existing application use cases validate them. React never accesses `localStorage` or implements business rules.
 
-See [Product Bible](docs/PRODUCT_BIBLE.md), [Architecture](docs/ARCHITECTURE.md), [Product UX history](docs/PRODUCT_UX.md), [Phase 4 design-system history](docs/DESIGN_SYSTEM.md), [Conversation Engine](docs/CONVERSATION_ENGINE.md), [Assistant Safety](docs/ASSISTANT_SAFETY.md), [Assistant Tools](docs/ASSISTANT_TOOLS.md), and [Financial Rules](docs/FINANCIAL_RULES.md).
+See [Product Bible](docs/PRODUCT_BIBLE.md), [Architecture](docs/ARCHITECTURE.md), [Revenue OS](docs/REVENUE_OS.md), [Product UX history](docs/PRODUCT_UX.md), [Phase 4 design-system history](docs/DESIGN_SYSTEM.md), [Conversation Engine](docs/CONVERSATION_ENGINE.md), [Assistant Safety](docs/ASSISTANT_SAFETY.md), [Assistant Tools](docs/ASSISTANT_TOOLS.md), and [Financial Rules](docs/FINANCIAL_RULES.md).
 
 ## Local data
 
-Schema v3 is stored under `closer-v2:database` in `localStorage`. Valid Phase 1 and Phase 2 schemas are migrated with safe commercial defaults; invalid or corrupt data falls back to the deterministic seed. Use **Debug → Reset demo data** to restore all three tenants. No real customer data is included.
+Schema v5 is stored under `closer-v2:database` in `localStorage`. Valid v1–v4 schemas are migrated with safe commercial, follow-up, sales-context, and unattributed-revenue defaults; invalid or corrupt data falls back to the deterministic seed. Use **Debug → Reset demo data** to restore all three tenants. No real customer data is included.
 
 ## Remote backup
 
@@ -79,6 +84,6 @@ Never commit `.env` files, credentials, tokens, customer exports, or production 
 
 ## Deliberate exclusions
 
-The current build does not include production AI, real WhatsApp/Meta/Instagram, a backend, authentication, background workers, calendar/payment integrations, deployment, or redesigns for the engineering appointment, quote/job, and debug modules. Follow-ups are inspectable scheduled records, not timers. Payments and refunds are validated manual records, not gateway transactions.
+The current build does not include production AI, live WhatsApp/Meta/Instagram/email, a backend, authentication, background workers, calendar/payment integrations, deployment, or redesigns for the engineering appointment, quote/job, and debug modules. Follow-ups and reactivation are inspectable scheduled records, not timers. Payments, refunds, and revenue attribution are validated manual records, not gateway or accounting transactions.
 
 See [Commercial journey](docs/COMMERCIAL_JOURNEY.md) for reconciliation, closing, recovery, idempotency, action, and activity rules.

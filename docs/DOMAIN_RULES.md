@@ -22,7 +22,9 @@ Memory contains normalized operational facts with tenant/contact, key, value, so
 
 ## Consent and follow-up
 
-Opt-out persists and blocks marketing. Operational communication remains independently controlled. A follow-up is a deterministic scheduled record, not a timer. It is blocked for Human Takeover, paused/closed/complete state, human-review action, incompatible consent, or existing identical pending scenario. New customer messages cancel pending follow-ups before recalculation.
+Opt-out persists and blocks marketing. Operational communication remains independently controlled. A follow-up is a deterministic scheduled record, not a timer. Vertical cadence config controls its sequence; attempts require operation keys. It is blocked for Human Takeover, paused/closed/complete state, human-review action, incompatible consent, or an identical pending scenario. New customer messages complete pending follow-ups before recalculation.
+
+Reactivation is never inferred as permission to message. Only sufficiently old lost opportunities with an eligible reason and active marketing consent become candidates. An explicit owner action reopens the opportunity and prepares one configured marketing follow-up; it does not send immediately.
 
 ## Scheduling, quote, job, and completion
 
@@ -34,4 +36,8 @@ Lost reasons are typed: customer declined, cancelled, outside service area, no l
 
 ## Idempotency
 
-Inbound provider IDs, appointment/quote/job operation keys, payment keys, RevenueEvent causation IDs, follow-up scenarios, and activity operation keys protect their respective side effects. Reuse with different business facts fails. Duplicate completion, acceptance, deposit, payment, scheduling, or activity delivery returns existing truth or performs no additional side effect.
+Inbound provider IDs, external connector conversation IDs, appointment/quote/job operation keys, payment keys, RevenueEvent causation/attribution operation IDs, follow-up attempt keys, and activity operation keys protect their respective side effects. Reuse with different business facts fails. Duplicate completion, acceptance, deposit, payment, scheduling, connector delivery, reactivation, attribution, or activity delivery returns existing truth or performs no additional side effect.
+
+## Owner action boundary
+
+Owner Copilot tools require an active owner TeamMember scoped to the same business. Read tools return operational projections without message bodies. Business-changing tools require explicit approval and call validated `CloserService` use cases; no provider or future LLM receives repository mutation access. Audit activities store tool and result count, not customer message content.

@@ -15,6 +15,7 @@ import type { ProductInboxConversationView } from '../../application/presentatio
 import {
   conversationStageLabel,
   formatProductTime,
+  handoffReasonLabel,
   nextActionCta,
   nextActionDescription,
   nextActionTitle,
@@ -33,6 +34,7 @@ export function InboxPage() {
     ?? null;
   const [query, setQuery] = useState('');
   const [message, setMessage] = useState('');
+  const [isSending, setIsSending] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const threadHeading = useRef<HTMLHeadingElement>(null);
@@ -65,6 +67,8 @@ export function InboxPage() {
     event.preventDefault();
     if (!selected || !message.trim()) return;
     setError('');
+    setSuccess('');
+    setIsSending(true);
     try {
       await service.sendMessage(businessId, selected.id, message, {
         author: MessageAuthor.Business,
@@ -74,6 +78,8 @@ export function InboxPage() {
       setSuccess('ההודעה נשלחה.');
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'לא הצלחנו לשלוח את ההודעה.');
+    } finally {
+      setIsSending(false);
     }
   };
 
@@ -93,9 +99,9 @@ export function InboxPage() {
       <aside className="inbox-list-pane" aria-label="רשימת פניות">
         <header className="inbox-list-header">
           <div>
-            <p className="product-page-eyebrow">WhatsApp ומקורות נוספים</p>
-            <h1>פניות</h1>
-            <span>{inbox.conversations.length} שיחות</span>
+            <p className="product-page-eyebrow">הקשר מסחרי</p>
+            <h1>שיחות פעילות</h1>
+            <span>{inbox.conversations.length} לקוחות בתהליך</span>
           </div>
           <MessageCircleMore aria-hidden="true" />
         </header>
@@ -167,11 +173,16 @@ export function InboxPage() {
                 <UserRoundCog aria-hidden="true" />
                 <div>
                   <strong>{selected.isHumanActive ? 'השיחה בטיפול אנושי' : 'העוזר מושהה'}</strong>
-                  <span>העוזר לא שולח הודעות עד שתחזירו אותו במפורש.</span>
+                  <span>
+                    {selected.handoff
+                      ? handoffReasonLabel(selected.handoff.reason)
+                      : 'העוזר לא שולח הודעות עד שתחזירו אותו במפורש.'}
+                  </span>
+                  {selected.handoff?.detail ? <small>{selected.handoff.detail}</small> : null}
                 </div>
                 <button
                   type="button"
-                  className="button button-secondary"
+                  className="button button-secondary handoff-resume-button"
                   onClick={() => run(() => service.resumeAssistant(businessId, selected.id), 'העוזר חזר לפעול בשיחה.')}
                 >
                   החזר את העוזר
@@ -219,14 +230,16 @@ export function InboxPage() {
             </ol>
 
             <form className="conversation-composer" onSubmit={send}>
-              {selected.suggestedReply && !selected.automationStopped ? (
+              {selected.suggestedReply ? (
                 <button
                   className="suggested-reply-chip"
                   type="button"
                   onClick={() => setMessage(selected.suggestedReply ?? '')}
                 >
                   <Bot aria-hidden="true" />
-                  השתמש בתשובה המוצעת
+                  {selected.automationStopped
+                    ? 'פתח טיוטה פנימית לבדיקה'
+                    : 'השתמש בתשובה המוצעת'}
                 </button>
               ) : null}
               <div className="conversation-composer-row">
@@ -240,9 +253,15 @@ export function InboxPage() {
                     rows={1}
                   />
                 </label>
-                <button className="button button-primary composer-send" type="submit">
+                <button
+                  aria-label={isSending ? 'שולח הודעה' : 'שליחה'}
+                  aria-busy={isSending}
+                  className="button button-primary composer-send"
+                  disabled={isSending || !message.trim()}
+                  type="submit"
+                >
                   <Send aria-hidden="true" />
-                  <span>שליחה</span>
+                  <span>{isSending ? 'שולח…' : 'שליחה'}</span>
                 </button>
                 {!selected.automationStopped && !selected.isClosed ? (
                   <button

@@ -1,77 +1,54 @@
-# Design system — Phase 4 implementation record
+# CLOSER owner visual system — Phase 4.2
 
-## Phase 4.1B prototype layer
+The normal owner application uses one Neo-Luxury operating environment. It is a dark product system, not a black admin dashboard: commercial priority comes from type, rhythm, separators, and restrained material depth before card containers or status color.
 
-The Command Center tests a new, isolated visual language on `/actions` only. It is not yet a production design system and must not be propagated before explicit owner approval.
+## Foundation
 
-- **Environment:** near-black `#07080d`, graphite/deep-navy surfaces, and rare indigo/violet illumination.
-- **Identity:** one semantic Hebrew/English `MaskedHeading` filled with an original liquid-metal material. RTL words use SVG `direction="rtl"` with `text-anchor="start"`; Latin words remain LTR with `text-anchor="end"`.
-- **Ambient motion:** one decorative `MoltenMetal` WebGL 2 layer. It pauses offscreen and when the page is hidden, caps desktop DPR, lowers mobile detail/glow/opacity, disables mobile pointer response and grain, and falls back to a static material for reduced motion or missing WebGL 2.
-- **Actions:** an original CLOSER card family with a small status signal, customer/service identity, business reason, one structured truth band, and one primary action. Card 1 influenced only the composed object and framed information concept; no proprietary code was used.
-- **Responsive order:** identity and operating state → owner decision count → top action → remaining queue → Today → Money → prepared automation proof. Mobile uses native-width stacking and the existing bottom-navigation boundary rather than shrinking desktop.
-- **Accessibility:** semantic headings and regions, one page-level main landmark, native links/selects, customer-specific action names, visible focus, text-plus-color states, 44px mobile actions, decorative shaders hidden from assistive technology, and reduced-motion fallback.
+- **Environment:** near-black `#070912`, deep graphite/navy surfaces, cool white type, and restrained indigo/violet light.
+- **Semantic accents:** human review `#ff7186`, verified collection `#dec181`, completed truth `#7fd5b1`, and primary action `#7864ff`. Color always accompanies text.
+- **Surface levels:** continuous canvas; quiet operational section; customer/work surface; command surface; exception surface. Repeated records normally use separators instead of individual floating cards.
+- **Type:** local system stack for dependable Hebrew rendering. Owner decisions use compact high-contrast headings; supporting copy is never required to decode the action.
+- **Geometry:** 9–14px controls and operational surfaces, 18px command surfaces. Shadows are restrained and reserved for identity/command depth.
 
-The prototype styles are intentionally scoped through `.command-center-shell` and `.command-*` selectors. The supplied visual components keep their own focused stylesheets. Unused prototype tokens were removed; the three existing breakpoints remain ordered at 1120, 820, and 520 pixels.
+The scoped owner tokens and route compositions live in `components/product/ProductLayout.css`. The earlier light structural rules remain available to engineering screens, while `.owner-shell` deliberately owns the complete normal product presentation.
 
-> **Status:** These tokens and components document the technically verified Phase 4 UI. They remain useful implementation evidence but are not an owner-approved final production direction and must not be propagated by default. The future experience and approval gate are defined by the [CLOSER Product Bible](PRODUCT_BIBLE.md).
+## Shell and navigation
 
-Phase 4 introduces a restrained production presentation system for the three core product experiences. Its visual direction is calm and operational: graphite navigation, crisp light working surfaces, one indigo action accent, and hierarchy created primarily with typography, spacing, and separators.
+Desktop uses one fixed RTL navigation rail: **היום, לקוחות, יומן ועבודות, כסף, עוד**. Mobile uses the same five destinations in a 56px bottom bar with safe-area padding. The business selector is integrated into a 52px mobile top bar and keeps a native labelled select.
 
-## Foundations
+`/debug`, `/demo`, `/appointments`, and `/quotes` retain the utilitarian engineering shell and are absent from owner navigation.
 
-The production shell is Hebrew-first and RTL. It uses the local system font stack (`Arial`, `Segoe UI`, `system-ui`) so Hebrew remains legible without a network font. Text weights are limited to regular, medium, and semibold; small muted copy is not used for essential actions.
+## Product surfaces
 
-Core color tokens:
+- **Command:** the Today operating state and first owner decision.
+- **Attention:** a thin semantic signal, customer context, reason, grounded truth, and one action. Human Takeover is strongest.
+- **Customer:** a separated operating row organised by commercial state, not contact metadata.
+- **Journey:** the customer’s current lead-to-cash position; appointment and quote/job journeys share one visual contract.
+- **Schedule:** time, customer, service/job, validated status, and deposit/balance context.
+- **Financial:** large verified amount followed by actionable per-customer truth; no speculative analytics.
+- **Exception:** restrained human-control treatment that explains automation is paused until explicit resume.
+- **Empty:** compact explanatory row, never a giant blank card.
 
-- canvas `#f4f6f8`, surface `#ffffff`, subtle surface `#f8f9fb`
-- primary ink `#171a21`, secondary and muted ink `#626b7a`
-- graphite navigation `#171a20`, elevated navigation `#20242c`
-- indigo action `#3454d1`, hover `#2945b8`, soft accent `#eef2ff`
-- semantic success `#147a55`, warning `#946200`, danger `#c43e4b`
-- standard border `#e2e6ec`, strong border `#cbd2dc`
+## Identity components
 
-The spacing rhythm uses 4, 8, 12, 16, 24, 32, 40, 48, and 64 pixels. Controls use an 8px radius, grouped surfaces 12px, and overlays 16px. Shadows are reserved for overlays; normal sections use surface contrast and separators.
+`MaskedHeading` remains a Today identity device. It renders semantic text once for assistive technology and uses ordinary DOM word spans for the visible material fill. This preserves WebKit Hebrew glyph shaping and mixed RTL/LTR order without reversing strings or drawing text in SVG.
 
-## Components
+`MoltenMetal` is used only behind Today. It is decorative, lazy-loaded with the Today route, pauses when hidden/offscreen, reduces mobile detail, and falls back to a static material when WebGL 2 or motion permission is unavailable. Other routes use CSS material surfaces and do not load a shader for decoration.
 
-The production component set is intentionally small:
+## Responsive and bidi rules
 
-- `ProductLayout` provides desktop navigation, mobile navigation, the business selector, skip link, and RTL boundary.
-- `ProductPage` and `SectionHeader` establish page and section hierarchy.
-- `ActionRow` presents one customer, one reason, and one clear action.
-- `CustomerAvatar`, `EmptyState`, `ErrorBanner`, and `SuccessBanner` provide consistent supporting states.
-- Inbox-specific conversation rows, message bubbles, recommendation strip, takeover banner, and composer are composed where used.
-- Customer workspace work, payment, facts, and activity summaries remain focused presentation components rather than generic dashboard cards.
+- Use logical inline/block properties and `dir="rtl"` at the owner shell.
+- Isolate phone numbers, email, dates, currency, and terms such as `BMW M240i` with `bdi`, `dir="auto"`, or plaintext bidi where appropriate.
+- At 820px the sidebar becomes bottom navigation; Inbox switches between list and one active thread; customer columns become a single journey narrative.
+- At 520px essential controls remain at least 44px, conversation actions stay visible, and all seven journey milestones fit without horizontal page overflow.
+- Use `100dvh` and `env(safe-area-inset-bottom)` for Safari/mobile chrome boundaries.
 
-Lucide supplies the single outline icon language. Directional icons follow the action in RTL: forward/drill-in points left and back points right. Icons support labels and never replace necessary text.
+## Interaction and accessibility
 
-## Interaction states
+- One `main` landmark, semantic headings/regions/lists, native links/buttons/selects, and a visible skip link.
+- A high-contrast 3px `:focus-visible` ring; route changes focus the main content; opening and closing a mobile conversation moves focus deliberately.
+- Human Takeover, money, closed, and missing-information states are expressed in text and icon as well as color.
+- Reduced motion removes nonessential animation and replaces the ambient shader with the static treatment.
+- Mobile owner controls use 44px or larger touch targets; bottom navigation uses 56px targets.
 
-Primary controls use indigo; secondary controls use a neutral surface and indigo text; quiet controls avoid unnecessary visual weight. All interactive elements have visible `:focus-visible` outlines. Disabled controls suppress action affordance, and hover feedback is restrained. Empty, success, error, human-takeover, closed-won, and outstanding-balance states use semantic color sparingly and always include text.
-
-Motion is limited to short color, panel, and control feedback. `prefers-reduced-motion` removes nonessential transition and animation duration.
-
-## Responsive rules
-
-- Above 1050px, the fixed RTL sidebar is 232px and content uses the full working width.
-- From 821–1050px, the sidebar and Inbox list narrow without reducing action clarity.
-- At 820px and below, the sidebar becomes a three-item bottom navigation and the top bar simplifies.
-- On mobile, Today becomes a single column, Inbox moves between the list and one active thread, and Customer Workspace puts payment truth before secondary detail.
-- At 520px and below, actions become full-width or icon-forward where labels would crowd; touch targets remain at least 44px.
-
-Use logical CSS properties (`inline` and `block`) for layout. Phone numbers, times, email addresses, and mixed Hebrew/English content use explicit LTR isolation with `bdi` where needed. Production pages must not create horizontal overflow or dense desktop tables on mobile.
-
-## Accessibility rules
-
-- Preserve semantic landmarks, headings, lists, labels, and native buttons/links.
-- Keep a visible keyboard skip link and predictable focus when opening a mobile conversation.
-- Associate status changes with `role="status"` or `role="alert"` where appropriate.
-- Do not communicate Human Takeover, payment state, or completion by color alone.
-- Maintain strong text/background contrast and 44px mobile touch targets.
-- Test keyboard order, screen-reader names, zoom/reflow, and reduced motion in addition to visual inspection.
-
-## Production versus engineering UI
-
-The production design system applies to `/actions`, `/inbox`, and `/customer/:id`. These routes translate commercial truth into plain Hebrew and omit confidence scores, enum values, reason codes, provider/tool names, operation keys, IDs, and raw memory structures.
-
-`/debug`, `/demo`, `/appointments`, and `/quotes` retain their functional engineering presentation for deterministic simulation and inspection. They may expose implementation details needed by developers and must not be treated as production UX patterns.
+Lucide remains the single icon family. Directional arrows follow RTL navigation: forward/drill-in points left, back points right. Icons never substitute for an accessible name.

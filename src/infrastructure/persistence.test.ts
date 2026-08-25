@@ -91,12 +91,97 @@ describe('versioned persistence', () => {
     storage.write(STORAGE_KEY, JSON.stringify(legacy));
     const database = new LocalDatabase(storage, seed);
     const snapshot = database.snapshot();
-    expect(snapshot.schemaVersion).toBe(3);
+    expect(snapshot.schemaVersion).toBe(SCHEMA_VERSION);
     expect(snapshot.leads.every((lead) => 'lostReason' in lead)).toBe(true);
     expect(snapshot.services.every((service) => service.workflowType)).toBe(true);
     expect(snapshot.activities.every((activity) => activity.occurredAt && 'operationKey' in activity)).toBe(true);
     expect(snapshot.appointments.every((appointment) => appointment.operationKey)).toBe(true);
     expect(snapshot.quotes.every((quote) => quote.operationKey)).toBe(true);
     expect(snapshot.jobs.every((job) => job.operationKey)).toBe(true);
+  });
+
+  it('migrates Phase 3 leads to normalized sales-source defaults', () => {
+    const storage = new MemoryStorageAdapter();
+    const seed = createDemoDatabase();
+    const legacy = structuredClone(seed) as unknown as Record<string, unknown>;
+    legacy.schemaVersion = 3;
+    (legacy.leads as Array<Record<string, unknown>>).forEach((lead) => {
+      delete lead.source;
+      delete lead.sourceReferenceId;
+      delete lead.priority;
+      delete lead.objections;
+    });
+    (legacy.businessSettings as Array<Record<string, unknown>>).forEach(
+      (settings) => {
+        delete settings.followUpCadenceHours;
+        delete settings.reactivationInactivityDays;
+      },
+    );
+    (legacy.scheduledFollowUps as Array<Record<string, unknown>>).forEach((followUp) => {
+      for (const field of [
+        'sequenceKey',
+        'sequenceStep',
+        'channel',
+        'attemptCount',
+        'attempts',
+        'nextAttemptAt',
+        'lastAttemptAt',
+        'lastResponseAt',
+        'stopReason',
+        'manualOverride',
+        'owner',
+        'ownerTeamMemberId',
+        'draftMessage',
+        'result',
+      ]) {
+        delete followUp[field];
+      }
+    });
+    storage.write(STORAGE_KEY, JSON.stringify(legacy));
+
+    const database = new LocalDatabase(storage, seed);
+    const snapshot = database.snapshot();
+
+    expect(snapshot.schemaVersion).toBe(SCHEMA_VERSION);
+    expect(snapshot.leads.every((lead) => lead.source === 'WHATSAPP')).toBe(true);
+    expect(snapshot.leads.every((lead) => lead.priority === 'NORMAL')).toBe(true);
+    expect(snapshot.leads.every((lead) => lead.sourceReferenceId === null)).toBe(true);
+    expect(snapshot.leads.every((lead) => lead.objections.length === 0)).toBe(true);
+    expect(snapshot.businessSettings.every((settings) => settings.followUpCadenceHours)).toBe(true);
+    expect(
+      snapshot.businessSettings.every((settings) => settings.reactivationInactivityDays > 0),
+    ).toBe(true);
+    expect(snapshot.scheduledFollowUps.every((followUp) => followUp.nextAttemptAt)).toBe(true);
+    expect(snapshot.scheduledFollowUps.every((followUp) => followUp.attemptCount === 0)).toBe(true);
+  });
+
+  it('migrates Phase 4 revenue events to tenant-linked attribution defaults', () => {
+    const storage = new MemoryStorageAdapter();
+    const seed = createDemoDatabase();
+    const legacy = structuredClone(seed) as unknown as Record<string, unknown>;
+    legacy.schemaVersion = 4;
+    (legacy.revenueEvents as Array<Record<string, unknown>>).forEach((event) => {
+      for (const field of [
+        'leadId',
+        'conversationId',
+        'leadSource',
+        'attributionStatus',
+        'attributionKind',
+        'contributingActivityIds',
+        'attributionOperationKey',
+        'attributedAt',
+        'attributedByTeamMemberId',
+      ]) {
+        delete event[field];
+      }
+    });
+    storage.write(STORAGE_KEY, JSON.stringify(legacy));
+
+    const database = new LocalDatabase(storage, seed);
+    const events = database.snapshot().revenueEvents;
+
+    expect(events.every((event) => event.leadId && event.conversationId)).toBe(true);
+    expect(events.every((event) => event.attributionStatus === 'UNATTRIBUTED')).toBe(true);
+    expect(events.every((event) => event.contributingActivityIds.length === 0)).toBe(true);
   });
 });

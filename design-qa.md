@@ -1,35 +1,40 @@
-# Phase 4 design QA
+# Phase 4.2 design QA
 
-Source compared: the user-selected quiet-command-center reference, side by side with the final 1440×1024 Today implementation.
+Visual foundation: the product-owner-approved Neo-Luxury Command Center direction, propagated only across the normal owner application.
 
-## Adherence review
+## Cohesion review
 
-- Preserves the graphite navigation rail, crisp light workspace, restrained indigo accent, list-first action hierarchy, and deliberately low card density.
-- Keeps the owner’s immediate workload as the dominant visual story; real domain state determines row and amount counts.
-- Uses a separate production presentation boundary, while engineering routes retain their detailed internal treatment.
+- Today, Customers, Customer Workspace, Conversation, Work, Money, and More now use one graphite/deep-navy shell, one RTL navigation model, one type hierarchy, and one action language.
+- No white/light legacy surface remains in the normal owner journey. `/debug`, `/demo`, `/appointments`, and `/quotes` intentionally retain the engineering presentation.
+- The result reads as an operating environment: owner exceptions and commercial progression lead; records, raw fields, and engineering state do not.
 
-## Responsive and RTL review
+## Render review
 
-- Reviewed Today, Inbox list, active conversation, and Customer Workspace at desktop, smaller-laptop, 393 px, and 375 px widths.
-- No horizontal overflow was found. Hebrew hierarchy, mixed-direction contact data, money, times, message alignment, directional icons, and fixed mobile navigation were checked.
-- Human Takeover, assistant-active, outstanding-balance, fully-paid, quote-waiting, and scheduled-work states were inspected.
+- 1440×1024: Today identity, sidebar hierarchy, first action, two-column queue, and lower operating surfaces.
+- 1100×760: Today and split Conversation; top-bar crowding was removed and no horizontal overflow remained.
+- 393×852: Today, Customers, Human Takeover, outstanding-balance Workspace, lower Workspace sections, Work, and Money.
+- 375×812: More and a validated closed-won Workspace. All seven journey stages remain visible.
+
+Multiple scroll positions verified fixed navigation, safe content padding, long page sections, email/phone/currency direction, and no content hidden behind the bottom bar.
+
+## RTL and Safari-defensive review
+
+MaskedHeading no longer draws visible Hebrew inside SVG text. The accessible sentence is logical Hebrew/English text; visible words are ordinary DOM spans with per-word direction and a background-clipped material. No string is reversed in JavaScript. Chromium renders the correct sentence and semantic name. Native Safari was not available for a physical verification pass.
 
 ## Accessibility review
 
-- Regions resolve to visible headings; conversation selection uses native list/button semantics.
-- Keyboard focus is restored across mobile master/detail navigation and route/state changes.
-- Focus contrast, touch targets, reduced motion, labels, status announcements, and customer-specific accessible link names were reviewed.
+- One main landmark, labelled regions, native controls, visible skip link, and logical heading order.
+- Current navigation uses `aria-current="page"`, including Customer and Conversation routes inside Customers.
+- Human Takeover and payment states use explicit language and icons, not color alone.
+- Route changes focus the main content; Inbox selection and mobile return restore focus.
+- Focus ring, labelled form controls, 44px mobile controls, 56px bottom-navigation targets, reduced-motion fallback, and dynamic viewport/safe-area behavior are implemented.
 
-## Findings resolved
+## Adversarial visual review
 
-- Removed a flexible-space gap in Inbox by replacing brittle conditional grid rows with a flex column.
-- Restored mobile customer and Human Takeover controls.
-- Corrected focus visibility, focus restoration, dynamic viewport sizing, RTL select spacing, consent copy, paused-automation copy, bidi isolation, and current-opportunity payment projection.
-- Removed confirmed dead/duplicated CSS hooks and kept production rules scoped away from the internal debug shell.
+Checked for white legacy islands, generic CRM tables, repeated identical cards, excessive glow/purple, oversized selectors/navigation, hidden actions, horizontal scrolling, bidi failures, money ambiguity, and Human Takeover dilution. Confirmed findings were fixed. The remaining intentionally card-like surfaces are command, financial truth, and exception states where containment improves comprehension.
 
-## Remaining observations
+## Performance posture
 
-- The selected reference contains illustrative schedule/payment density. The implementation intentionally shows only deterministic, financially valid demo truth.
-- Calendar, Jobs, Quotes, Payments, settings, and other production modules remain outside Phase 4 scope.
+MoltenMetal appears only on Today. Today is route-split so GSAP/OGL stay out of the 432.40 kB main JavaScript chunk; its lazy chunk is 136.51 kB. Mobile uses one reduced-detail canvas, no pointer response/grain, and the component pauses offscreen/hidden. No Core Web Vitals or native-iPhone thermal claim is made because the required profiler/device was unavailable.
 
-final result: passed
+final result: passed with native Safari/device verification explicitly outstanding

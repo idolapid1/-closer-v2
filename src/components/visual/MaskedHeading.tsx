@@ -1,7 +1,6 @@
 import {
   useCallback,
   useEffect,
-  useId,
   useMemo,
   useRef,
   type CSSProperties,
@@ -58,8 +57,13 @@ const clamp = (value: number, minimum: number, maximum: number) =>
 const wordDirection = (word: string): 'rtl' | 'ltr' =>
   /[\u0590-\u05ff]/.test(word) ? 'rtl' : 'ltr';
 
+const justifyContent = (align: TextAlign): CSSProperties['justifyContent'] => {
+  if (align === 'center') return 'center';
+  return align === 'right' ? 'flex-start' : 'flex-end';
+};
+
 export function MaskedHeading({
-  text = 'CLOSER עובד. נשאר רק להחליט.',
+  text = 'CLOSER עובד. אתה רק מחליט.',
   tag = 'h1',
   mediaType = 'image',
   src,
@@ -84,17 +88,12 @@ export function MaskedHeading({
   ...rest
 }: MaskedHeadingProps) {
   const rootRef = useRef<HTMLHeadingElement>(null);
-  const measureRef = useRef<HTMLSpanElement>(null);
   const revealRef = useRef<HTMLSpanElement>(null);
-  const mediaRef = useRef<HTMLSpanElement>(null);
   const wordRefs = useRef<Array<HTMLSpanElement | null>>([]);
-  const baseRefs = useRef<Array<HTMLElement | null>>([]);
-  const glyphRefs = useRef<Array<SVGTextElement | null>>([]);
   const tweenRef = useRef<gsap.core.Tween | null>(null);
   const offsetRef = useRef({ x: 0, y: 0, tx: 0, ty: 0 });
-
-  const clipId = `mh-${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`;
   const words = useMemo(() => String(text).split(/\s+/).filter(Boolean), [text]);
+  const materialSource = mediaType === 'video' ? poster : src;
 
   const settingsRef = useRef<MotionSettings>({
     fillScale,
@@ -117,39 +116,21 @@ export function MaskedHeading({
 
   const place = useCallback(() => {
     const root = rootRef.current;
-    const media = mediaRef.current;
-    if (!root || !media) return;
+    if (!root) return;
     const settings = settingsRef.current;
     const maxX = Math.max(0, ((settings.fillScale - 1) / 2) * root.clientWidth);
     const maxY = Math.max(0, ((settings.fillScale - 1) / 2) * root.clientHeight);
     const offset = offsetRef.current;
-
-    media.style.transform = `translate3d(${clamp(offset.x, -maxX, maxX).toFixed(2)}px, ${clamp(offset.y, -maxY, maxY).toFixed(2)}px, 0) scale(${settings.fillScale})`;
-    media.style.filter = `brightness(${settings.brightness}) saturate(${settings.saturation})${settings.grayscale ? ' grayscale(1)' : ''}`;
+    root.style.setProperty('--mh-x', `${clamp(offset.x, -maxX, maxX).toFixed(2)}px`);
+    root.style.setProperty('--mh-y', `${clamp(offset.y, -maxY, maxY).toFixed(2)}px`);
+    root.style.setProperty('--mh-fill-scale', `${settings.fillScale * 100}%`);
+    root.style.setProperty('--mh-filter', `brightness(${settings.brightness}) saturate(${settings.saturation})${settings.grayscale ? ' grayscale(1)' : ''}`);
   }, []);
 
   const sync = useCallback(() => {
     const root = rootRef.current;
-    const measure = measureRef.current;
-    if (!root || !measure) return;
-
+    if (!root) return;
     root.style.fontSize = `${clamp(root.clientWidth * settingsRef.current.textScale, 30, 116).toFixed(1)}px`;
-    const computed = window.getComputedStyle(measure);
-
-    for (let index = 0; index < wordRefs.current.length; index += 1) {
-      const box = wordRefs.current[index];
-      const baseline = baseRefs.current[index];
-      const glyph = glyphRefs.current[index];
-      if (!box || !baseline || !glyph) continue;
-
-      glyph.setAttribute('x', `${box.offsetLeft + box.offsetWidth}`);
-      glyph.setAttribute('y', `${baseline.offsetTop}`);
-      glyph.style.fontFamily = computed.fontFamily;
-      glyph.style.fontSize = computed.fontSize;
-      glyph.style.fontWeight = computed.fontWeight;
-      glyph.style.fontStyle = computed.fontStyle;
-      glyph.style.letterSpacing = computed.letterSpacing;
-    }
     place();
   }, [place]);
 
@@ -177,7 +158,6 @@ export function MaskedHeading({
     let animationFrame = 0;
     let previous = performance.now();
     let clock = 0;
-
     const frame = (now: number) => {
       const delta = Math.min(0.05, (now - previous) / 1000);
       previous = now;
@@ -192,7 +172,6 @@ export function MaskedHeading({
       place();
       animationFrame = requestAnimationFrame(frame);
     };
-
     const onMove = (event: PointerEvent) => {
       const settings = settingsRef.current;
       if (settings.parallax <= 0 || event.pointerType === 'touch') return;
@@ -202,7 +181,6 @@ export function MaskedHeading({
       offsetRef.current.tx = clamp(normalizedX, -1, 1) * -settings.parallax;
       offsetRef.current.ty = clamp(normalizedY, -1, 1) * -settings.parallax;
     };
-
     const onLeave = () => {
       offsetRef.current.tx = 0;
       offsetRef.current.ty = 0;
@@ -211,7 +189,6 @@ export function MaskedHeading({
     root.addEventListener('pointermove', onMove);
     root.addEventListener('pointerleave', onLeave);
     animationFrame = requestAnimationFrame(frame);
-
     return () => {
       cancelAnimationFrame(animationFrame);
       resizeObserver?.disconnect();
@@ -229,18 +206,17 @@ export function MaskedHeading({
     const root = rootRef.current;
     const layer = revealRef.current;
     if (!root || !layer) return;
-    const glyphs = glyphRefs.current.filter((glyph): glyph is SVGTextElement => glyph !== null);
-    if (glyphs.length === 0) return;
+    const wordElements = wordRefs.current.filter((word): word is HTMLSpanElement => word !== null);
+    if (wordElements.length === 0) return;
 
-    const riseDistance = () => (Number.parseFloat(window.getComputedStyle(root).fontSize) || 48) * 1.05;
     const settle = () => {
-      gsap.set(glyphs, { y: 0 });
+      gsap.set(wordElements, { yPercent: 0, opacity: 1 });
       gsap.set(layer, { opacity: 1, scale: 1, clipPath: 'inset(0% 0% 0% 0%)' });
     };
     const rest = () => {
-      if (reveal === 'rise') gsap.set(glyphs, { y: riseDistance() });
+      if (reveal === 'rise') gsap.set(wordElements, { yPercent: 110, opacity: 0 });
       if (reveal === 'wipe') gsap.set(layer, { clipPath: 'inset(0% 100% 0% 0%)' });
-      if (reveal === 'fade') gsap.set(layer, { opacity: 0, scale: 1.04 });
+      if (reveal === 'fade') gsap.set(layer, { opacity: 0, scale: 1.035 });
     };
     const reducedMotion = window.matchMedia
       ? window.matchMedia('(prefers-reduced-motion: reduce)').matches
@@ -249,38 +225,36 @@ export function MaskedHeading({
       settle();
       return;
     }
-
     const play = () => {
       tweenRef.current?.kill();
       if (reveal === 'rise') {
-        gsap.set(layer, { opacity: 1, scale: 1, clipPath: 'inset(0% 0% 0% 0%)' });
-        tweenRef.current = gsap.fromTo(
-          glyphs,
-          { y: riseDistance() },
-          { y: 0, duration, stagger, ease: 'power4.out', overwrite: 'auto' },
-        );
+        tweenRef.current = gsap.to(wordElements, {
+          yPercent: 0,
+          opacity: 1,
+          duration,
+          stagger,
+          ease: 'power4.out',
+          overwrite: 'auto',
+        });
       } else if (reveal === 'wipe') {
-        gsap.set(glyphs, { y: 0 });
-        const state = { progress: 100 };
-        tweenRef.current = gsap.to(state, {
-          progress: 0,
+        tweenRef.current = gsap.to(layer, {
+          clipPath: 'inset(0% 0% 0% 0%)',
           duration,
           ease: 'power3.inOut',
           overwrite: 'auto',
-          onUpdate: () => {
-            layer.style.clipPath = `inset(0% ${state.progress}% 0% 0%)`;
-          },
         });
       } else {
-        gsap.set(glyphs, { y: 0 });
-        tweenRef.current = gsap.fromTo(
-          layer,
-          { opacity: 0, scale: 1.04 },
-          { opacity: 1, scale: 1, duration, ease: 'power3.out', overwrite: 'auto' },
-        );
+        tweenRef.current = gsap.to(layer, {
+          opacity: 1,
+          scale: 1,
+          duration,
+          ease: 'power3.out',
+          overwrite: 'auto',
+        });
       }
     };
 
+    rest();
     if (trigger === 'hover') {
       settle();
       root.addEventListener('pointerenter', play);
@@ -289,10 +263,7 @@ export function MaskedHeading({
         tweenRef.current?.kill();
       };
     }
-
     if (trigger === 'view' && 'IntersectionObserver' in window) {
-      settle();
-      rest();
       const intersectionObserver = new IntersectionObserver(
         (entries) => {
           if (entries.some((entry) => entry.isIntersecting)) {
@@ -308,28 +279,35 @@ export function MaskedHeading({
         tweenRef.current?.kill();
       };
     }
-
     play();
     return () => tweenRef.current?.kill();
   }, [duration, reveal, stagger, trigger, words]);
 
   const Tag = tag;
+  const materialStyle = {
+    '--mh-image': materialSource ? `url(${materialSource})` : 'none',
+    textAlign: align,
+    fontWeight: weight,
+    letterSpacing: `${tracking}em`,
+    lineHeight,
+    ...style,
+  } as CSSProperties;
 
   return (
     <Tag
       ref={rootRef}
       className={`masked-heading ${className}`.trim()}
       dir="rtl"
-      style={{
-        textAlign: align,
-        fontWeight: weight,
-        letterSpacing: `${tracking}em`,
-        lineHeight,
-        ...style,
-      }}
+      style={materialStyle}
       {...rest}
     >
-      <span ref={measureRef} className="masked-heading__measure">
+      <span className="sr-only">{text}</span>
+      <span
+        ref={revealRef}
+        className="masked-heading__content"
+        aria-hidden="true"
+        style={{ justifyContent: justifyContent(align) }}
+      >
         {words.map((word, index) => (
           <span
             key={`${word}-${index}`}
@@ -338,64 +316,11 @@ export function MaskedHeading({
             }}
             className="masked-heading__word"
             dir={wordDirection(word)}
+            data-direction={wordDirection(word)}
           >
             {word}
-            <i
-              ref={(element) => {
-                baseRefs.current[index] = element;
-              }}
-              className="masked-heading__baseline"
-            />
           </span>
         ))}
-      </span>
-
-      <svg className="masked-heading__defs" aria-hidden="true" focusable="false">
-        <defs>
-          <clipPath id={clipId} clipPathUnits="userSpaceOnUse">
-            {words.map((word, index) => {
-              const direction = wordDirection(word);
-              return (
-                <text
-                  key={`${word}-${index}`}
-                  ref={(element) => {
-                    glyphRefs.current[index] = element;
-                  }}
-                  direction={direction}
-                  textAnchor={direction === 'rtl' ? 'start' : 'end'}
-                >
-                  {word}
-                </text>
-              );
-            })}
-          </clipPath>
-        </defs>
-      </svg>
-
-      <span ref={revealRef} className="masked-heading__reveal" aria-hidden="true">
-        <span className="masked-heading__clip" style={{ clipPath: `url(#${clipId})` }}>
-          <span ref={mediaRef} className="masked-heading__media">
-            {mediaType === 'video' ? (
-              <video
-                className="masked-heading__source"
-                src={src}
-                poster={poster}
-                autoPlay
-                muted
-                loop
-                playsInline
-              />
-            ) : (
-              <img
-                className="masked-heading__source"
-                src={src}
-                alt=""
-                draggable={false}
-                decoding="async"
-              />
-            )}
-          </span>
-        </span>
       </span>
     </Tag>
   );

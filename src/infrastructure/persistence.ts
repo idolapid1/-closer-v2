@@ -1,4 +1,20 @@
-import { ConversationMode, ConversationStage, type EntityCollectionName, type KnowledgeTopic, type TenantEntity } from '../domain/entities';
+import {
+  ConversationChannel,
+  ConversationMode,
+  ConversationStage,
+  FollowUpChannel,
+  FollowUpOwner,
+  FollowUpResult,
+  FollowUpStopReason,
+  LeadPriority,
+  LeadSource,
+  RevenueAttributionKind,
+  RevenueAttributionStatus,
+  SalesObjection,
+  type EntityCollectionName,
+  type KnowledgeTopic,
+  type TenantEntity,
+} from '../domain/entities';
 import type {
   DatabasePort,
   DatabaseSchema,
@@ -80,7 +96,18 @@ export function isDatabaseSchema(value: unknown): value is DatabaseSchema {
   if (candidate.schemaVersion !== SCHEMA_VERSION) return false;
   return COLLECTIONS.every(
     (collection) =>
-      Array.isArray(candidate[collection]) && candidate[collection].every(isTenantEntity),
+      Array.isArray(candidate[collection]) &&
+      candidate[collection].every((entity: unknown) =>
+        collection === 'leads'
+          ? isLeadEntity(entity)
+          : collection === 'businessSettings'
+            ? isBusinessSettingsEntity(entity)
+            : collection === 'scheduledFollowUps'
+              ? isScheduledFollowUpEntity(entity)
+              : collection === 'revenueEvents'
+                ? isRevenueEventEntity(entity)
+              : isTenantEntity(entity),
+      ),
   );
 }
 
@@ -91,7 +118,7 @@ export function migrateDatabaseSchema(
   if (isDatabaseSchema(value)) return clone(value);
   if (!value || typeof value !== 'object') return null;
   const legacy = value as Record<string, unknown>;
-  if (legacy.schemaVersion !== 1 && legacy.schemaVersion !== 2) return null;
+  if (![1, 2, 3, 4].includes(legacy.schemaVersion as number)) return null;
   const legacyCollections = legacy.schemaVersion === 1
     ? COLLECTIONS.filter(
         (collection) => !['customerMemory', 'scheduledFollowUps', 'assistantDecisionRecords'].includes(collection),
@@ -112,6 +139,21 @@ export function migrateDatabaseSchema(
     migrated.scheduledFollowUps = [];
     migrated.assistantDecisionRecords = [];
   }
+  migrated.businessSettings = (
+    legacy.businessSettings as Array<Record<string, unknown>>
+  ).map((settings) => ({
+    ...settings,
+    followUpCadenceHours:
+      settings.followUpCadenceHours ??
+      seed.businessSettings.find((candidate) => candidate.businessId === settings.businessId)
+        ?.followUpCadenceHours ??
+      {},
+    reactivationInactivityDays:
+      typeof settings.reactivationInactivityDays === 'number'
+        ? settings.reactivationInactivityDays
+        : seed.businessSettings.find((candidate) => candidate.businessId === settings.businessId)
+            ?.reactivationInactivityDays ?? 30,
+  }));
   migrated.businessKnowledge = (legacy.businessKnowledge as Array<Record<string, unknown>>).map(
     (knowledge) => {
       const defaults = seed.businessKnowledge.find(
@@ -161,10 +203,113 @@ export function migrateDatabaseSchema(
       responsibleState: handoff.responsibleState ?? ConversationStage.HumanReview,
     }),
   );
-  migrated.leads = (legacy.leads as Array<Record<string, unknown>>).map((lead) => ({
-    ...lead,
-    lostReason: lead.lostReason ?? null,
-  }));
+  const legacyConversations = new Map(
+    (legacy.conversations as Array<Record<string, unknown>>).map((conversation) => [
+      conversation.id,
+      conversation,
+    ]),
+  );
+  migrated.scheduledFollowUps = (
+    (migrated.scheduledFollowUps as Array<Record<string, unknown>> | undefined) ?? []
+  ).map((followUp) => {
+    const conversation = legacyConversations.get(followUp.conversationId);
+    return {
+      ...followUp,
+      sequenceKey: followUp.sequenceKey ?? followUp.scenario,
+      sequenceStep:
+        typeof followUp.sequenceStep === 'number' ? followUp.sequenceStep : 0,
+      channel: isFollowUpChannel(followUp.channel)
+        ? followUp.channel
+        : followUpChannelForConversation(conversation?.channel),
+      attemptCount:
+        typeof followUp.attemptCount === 'number' ? followUp.attemptCount : 0,
+      attempts: Array.isArray(followUp.attempts) ? followUp.attempts : [],
+      nextAttemptAt: followUp.nextAttemptAt ?? followUp.dueAt ?? null,
+      lastAttemptAt: followUp.lastAttemptAt ?? null,
+      lastResponseAt: followUp.lastResponseAt ?? null,
+      stopReason: isFollowUpStopReason(followUp.stopReason) ? followUp.stopReason : null,
+      manualOverride:
+        typeof followUp.manualOverride === 'boolean' ? followUp.manualOverride : false,
+      owner: isFollowUpOwner(followUp.owner) ? followUp.owner : FollowUpOwner.Assistant,
+      ownerTeamMemberId:
+        typeof followUp.ownerTeamMemberId === 'string' ? followUp.ownerTeamMemberId : null,
+      draftMessage:
+        typeof followUp.draftMessage === 'string' ? followUp.draftMessage : null,
+      result: isFollowUpResult(followUp.result) ? followUp.result : FollowUpResult.Pending,
+    };
+  });
+  migrated.leads = (legacy.leads as Array<Record<string, unknown>>).map((lead) => {
+    const conversation = legacyConversations.get(lead.conversationId);
+    const source = isLeadSource(lead.source)
+      ? lead.source
+      : leadSourceForChannel(conversation?.channel);
+    return {
+      ...lead,
+      lostReason: lead.lostReason ?? null,
+      source,
+      sourceReferenceId:
+        typeof lead.sourceReferenceId === 'string' && lead.sourceReferenceId !== ''
+          ? lead.sourceReferenceId
+          : null,
+      priority: isLeadPriority(lead.priority) ? lead.priority : LeadPriority.Normal,
+      objections: Array.isArray(lead.objections)
+        ? lead.objections.filter(isSalesObjection)
+        : [],
+    };
+  });
+  const migratedLeads = new Map(
+    (migrated.leads as Array<Record<string, unknown>>).map((lead) => [lead.id, lead]),
+  );
+  const referenceLeadIds = new Map<string, string>();
+  for (const collection of ['appointments', 'quotes', 'jobs'] as const) {
+    for (const reference of legacy[collection] as Array<Record<string, unknown>>) {
+      if (typeof reference.id === 'string' && typeof reference.leadId === 'string') {
+        referenceLeadIds.set(reference.id, reference.leadId);
+      }
+    }
+  }
+  migrated.revenueEvents = (legacy.revenueEvents as Array<Record<string, unknown>>).map(
+    (event) => {
+      const leadId =
+        typeof event.leadId === 'string'
+          ? event.leadId
+          : referenceLeadIds.get(String(event.referenceId)) ?? '';
+      const lead = migratedLeads.get(leadId);
+      return {
+        ...event,
+        leadId,
+        conversationId:
+          typeof event.conversationId === 'string'
+            ? event.conversationId
+            : typeof lead?.conversationId === 'string'
+              ? lead.conversationId
+              : '',
+        leadSource: isLeadSource(event.leadSource)
+          ? event.leadSource
+          : isLeadSource(lead?.source)
+            ? lead.source
+            : LeadSource.Manual,
+        attributionStatus: isRevenueAttributionStatus(event.attributionStatus)
+          ? event.attributionStatus
+          : RevenueAttributionStatus.Unattributed,
+        attributionKind: isRevenueAttributionKind(event.attributionKind)
+          ? event.attributionKind
+          : null,
+        contributingActivityIds: Array.isArray(event.contributingActivityIds)
+          ? event.contributingActivityIds.filter((id): id is string => typeof id === 'string')
+          : [],
+        attributionOperationKey:
+          typeof event.attributionOperationKey === 'string'
+            ? event.attributionOperationKey
+            : null,
+        attributedAt: typeof event.attributedAt === 'string' ? event.attributedAt : null,
+        attributedByTeamMemberId:
+          typeof event.attributedByTeamMemberId === 'string'
+            ? event.attributedByTeamMemberId
+            : null,
+      };
+    },
+  );
   migrated.services = (legacy.services as Array<Record<string, unknown>>).map((service) => ({
     ...service,
     workflowType:
@@ -189,6 +334,143 @@ export function migrateDatabaseSchema(
 
 function clone<T>(value: T): T {
   return structuredClone(value);
+}
+
+function isLeadEntity(value: unknown): boolean {
+  if (!isTenantEntity(value)) return false;
+  const lead = value as unknown as Record<string, unknown>;
+  return (
+    isLeadSource(lead.source) &&
+    (lead.sourceReferenceId === null || typeof lead.sourceReferenceId === 'string') &&
+    isLeadPriority(lead.priority) &&
+    Array.isArray(lead.objections) &&
+    lead.objections.every(isSalesObjection)
+  );
+}
+
+function isBusinessSettingsEntity(value: unknown): boolean {
+  if (!isTenantEntity(value)) return false;
+  const settings = value as unknown as Record<string, unknown>;
+  if (!settings.followUpCadenceHours || typeof settings.followUpCadenceHours !== 'object') {
+    return false;
+  }
+  if (
+    !Number.isSafeInteger(settings.reactivationInactivityDays) ||
+    (settings.reactivationInactivityDays as number) < 1
+  ) {
+    return false;
+  }
+  return Object.values(settings.followUpCadenceHours).every(
+    (cadence) =>
+      Array.isArray(cadence) &&
+      cadence.every((hours) => Number.isSafeInteger(hours) && (hours as number) >= 0),
+  );
+}
+
+function isScheduledFollowUpEntity(value: unknown): boolean {
+  if (!isTenantEntity(value)) return false;
+  const followUp = value as unknown as Record<string, unknown>;
+  return (
+    typeof followUp.sequenceKey === 'string' &&
+    Number.isSafeInteger(followUp.sequenceStep) &&
+    isFollowUpChannel(followUp.channel) &&
+    Number.isSafeInteger(followUp.attemptCount) &&
+    Array.isArray(followUp.attempts) &&
+    followUp.attempts.every(isFollowUpAttempt) &&
+    (followUp.nextAttemptAt === null || typeof followUp.nextAttemptAt === 'string') &&
+    (followUp.lastAttemptAt === null || typeof followUp.lastAttemptAt === 'string') &&
+    (followUp.lastResponseAt === null || typeof followUp.lastResponseAt === 'string') &&
+    (followUp.stopReason === null || isFollowUpStopReason(followUp.stopReason)) &&
+    typeof followUp.manualOverride === 'boolean' &&
+    isFollowUpOwner(followUp.owner) &&
+    (followUp.ownerTeamMemberId === null || typeof followUp.ownerTeamMemberId === 'string') &&
+    (followUp.draftMessage === null || typeof followUp.draftMessage === 'string') &&
+    isFollowUpResult(followUp.result)
+  );
+}
+
+function isRevenueEventEntity(value: unknown): boolean {
+  if (!isTenantEntity(value)) return false;
+  const event = value as unknown as Record<string, unknown>;
+  return (
+    typeof event.leadId === 'string' &&
+    event.leadId !== '' &&
+    typeof event.conversationId === 'string' &&
+    event.conversationId !== '' &&
+    isLeadSource(event.leadSource) &&
+    isRevenueAttributionStatus(event.attributionStatus) &&
+    (event.attributionKind === null || isRevenueAttributionKind(event.attributionKind)) &&
+    Array.isArray(event.contributingActivityIds) &&
+    event.contributingActivityIds.every((id) => typeof id === 'string') &&
+    (event.attributionOperationKey === null || typeof event.attributionOperationKey === 'string') &&
+    (event.attributedAt === null || typeof event.attributedAt === 'string') &&
+    (event.attributedByTeamMemberId === null ||
+      typeof event.attributedByTeamMemberId === 'string')
+  );
+}
+
+function isRevenueAttributionKind(value: unknown): value is RevenueAttributionKind {
+  return Object.values(RevenueAttributionKind).includes(value as RevenueAttributionKind);
+}
+
+function isRevenueAttributionStatus(value: unknown): value is RevenueAttributionStatus {
+  return Object.values(RevenueAttributionStatus).includes(value as RevenueAttributionStatus);
+}
+
+function isFollowUpAttempt(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const attempt = value as Record<string, unknown>;
+  return (
+    typeof attempt.operationKey === 'string' &&
+    isFollowUpResult(attempt.result) &&
+    attempt.result !== FollowUpResult.Pending &&
+    attempt.result !== FollowUpResult.ResponseReceived &&
+    attempt.result !== FollowUpResult.Stopped &&
+    typeof attempt.attemptedAt === 'string'
+  );
+}
+
+function isLeadSource(value: unknown): value is LeadSource {
+  return Object.values(LeadSource).includes(value as LeadSource);
+}
+
+function isLeadPriority(value: unknown): value is LeadPriority {
+  return Object.values(LeadPriority).includes(value as LeadPriority);
+}
+
+function isSalesObjection(value: unknown): value is SalesObjection {
+  return Object.values(SalesObjection).includes(value as SalesObjection);
+}
+
+function isFollowUpChannel(value: unknown): value is FollowUpChannel {
+  return Object.values(FollowUpChannel).includes(value as FollowUpChannel);
+}
+
+function isFollowUpOwner(value: unknown): value is FollowUpOwner {
+  return Object.values(FollowUpOwner).includes(value as FollowUpOwner);
+}
+
+function isFollowUpResult(value: unknown): value is FollowUpResult {
+  return Object.values(FollowUpResult).includes(value as FollowUpResult);
+}
+
+function isFollowUpStopReason(value: unknown): value is FollowUpStopReason {
+  return Object.values(FollowUpStopReason).includes(value as FollowUpStopReason);
+}
+
+function leadSourceForChannel(channel: unknown): LeadSource {
+  if (channel === ConversationChannel.WhatsApp) return LeadSource.WhatsApp;
+  if (channel === ConversationChannel.Instagram) return LeadSource.Instagram;
+  if (channel === ConversationChannel.WebsiteForm) return LeadSource.WebsiteForm;
+  if (channel === ConversationChannel.Email) return LeadSource.Email;
+  return LeadSource.Manual;
+}
+
+function followUpChannelForConversation(channel: unknown): FollowUpChannel {
+  if (channel === ConversationChannel.WhatsApp) return FollowUpChannel.WhatsApp;
+  if (channel === ConversationChannel.Instagram) return FollowUpChannel.Instagram;
+  if (channel === ConversationChannel.Email) return FollowUpChannel.Email;
+  return FollowUpChannel.Manual;
 }
 
 class LocalTenantRepository<K extends EntityCollectionName>

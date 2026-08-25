@@ -2,6 +2,7 @@ import {
   ActivityType,
   ConversationStage,
   NextActionType,
+  HandoffReason,
   type BusinessKind,
   type AppointmentStatus,
   type CustomerFactKey,
@@ -291,6 +292,9 @@ export function activityLabel(type: ActivityType): string {
     [ActivityType.OpportunityWon]: 'התהליך הושלם ושולם',
     [ActivityType.OpportunityLost]: 'הוחלט לא להמשיך',
     [ActivityType.OpportunityReopened]: 'התהליך נפתח מחדש',
+    [ActivityType.RevenueAttributionVerified]: 'שיוך ההכנסה אומת',
+    [ActivityType.ReactivationPrepared]: 'הוכן חיבור מחדש עם הלקוח/ה',
+    [ActivityType.OwnerToolExecuted]: 'בוצעה פעולת בעלים מאושרת',
     [ActivityType.MemoryChanged]: 'פרטי הלקוח/ה עודכנו',
   };
   return labels[type] ?? 'הסטטוס עודכן';
@@ -306,6 +310,35 @@ export function lostReasonLabel(reason: OpportunityLostReason | null): string {
     QUOTE_EXPIRED: 'הצעת המחיר פגה',
     UNAVAILABLE: 'לא נמצא מועד מתאים',
   }[reason];
+}
+
+export function handoffReasonLabel(reason: HandoffReason): string {
+  switch (reason) {
+    case HandoffReason.SensitiveQuestion:
+      return 'נדרש שיקול דעת רגיש או רפואי';
+    case HandoffReason.LegalQuestion:
+      return 'נדרשת תשובה בנושא משפטי';
+    case HandoffReason.Complaint:
+      return 'הלקוח העלה תלונה שדורשת טיפול';
+    case HandoffReason.Refund:
+      return 'בקשת החזר דורשת החלטת בעלים';
+    case HandoffReason.UnusualDiscount:
+      return 'בקשת הנחה חריגה דורשת אישור';
+    case HandoffReason.AggressiveOrConfused:
+      return 'השיחה דורשת התערבות אנושית';
+    case HandoffReason.LowConfidence:
+      return 'אין מספיק ודאות כדי להמשיך אוטומטית';
+    case HandoffReason.UnsupportedKnowledge:
+      return 'הבקשה חורגת מהמידע המאומת של העסק';
+    case HandoffReason.HumanRequested:
+      return 'הלקוח ביקש לדבר עם אדם';
+    case HandoffReason.ConflictingInformation:
+      return 'נמצאו פרטים סותרים שדורשים בדיקה';
+    case HandoffReason.SafetyConcern:
+      return 'נדרשת בדיקת בטיחות לפני שממשיכים';
+    case HandoffReason.Manual:
+      return 'השיחה הועברה לבעלים באופן ידני';
+  }
 }
 
 export function formatProductMoney(amountCents: number, currency: string): string {

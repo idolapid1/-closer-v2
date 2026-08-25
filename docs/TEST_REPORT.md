@@ -1,54 +1,68 @@
-# Phase 4 test report
+# Revenue operating-system foundation test report
 
-## Phase 4.1B Command Center approval prototype
+Status: the complete local quality gate passed on 2026-08-25 using the supported bundled Node 24.19.0 runtime. `src/test/setup.ts` remains unchanged; the test command disables Node's experimental global Web Storage so jsdom owns browser `localStorage`.
 
-Status: **passed** on 2026-08-15. Visual direction remains pending explicit product-owner approval.
+## Automated coverage
 
-- `npm run lint`: exit 0; no errors or warnings.
-- `npm run typecheck`: exit 0; strict `tsc --noEmit` reported no errors.
-- `npm run test`: exit 0; **11 test files and 113 tests passed**.
-- `npm run build`: exit 0; Vite 7.3.6 transformed 1,926 modules and emitted `dist/index.html` 0.60 kB (0.39 kB gzip), the 297.41 kB liquid-metal image, CSS 54.02 kB (10.92 kB gzip), and JavaScript 549.07 kB (172.66 kB gzip). Vite reports its standard over-500 kB chunk advisory; no threshold was raised to hide it.
-- `npm run verify`: exit 0; lint, strict TypeScript, all 113 tests, and production build passed.
-- `npm audit`: exit 0; found 0 vulnerabilities.
+The suite preserves all Phase 1–3 domain/application scenarios and adds owner-experience regressions for:
 
-The suite was run with the bundled Node 24.19.0 runtime. The host's Node 26.7.0 exposes an experimental global Web Storage getter without `--localstorage-file`, which shadows jsdom and produces an undefined `localStorage`; this is a host-runtime mismatch, not an application failure. `src/test/setup.ts` remains unchanged.
+- direct Today, Customers, Customer Workspace, Inbox, Work, Money, and More routes;
+- real menu navigation and active navigation state;
+- Customers → Human Takeover workspace → Conversation;
+- return from Customer Workspace to Customers;
+- customer-specific Today/action links and real balance links;
+- ordinary Inbox list/button semantics and explicit Resume behavior;
+- DOM-based mixed Hebrew/English MaskedHeading order without SVG text;
+- static fallback and reduced-motion shader behavior;
+- tenant-scoped Customers, Schedule, and Money read models;
+- Human Takeover priority and validated remaining-balance projection;
+- shared appointment and quote/job schedule contracts.
+- validated collected, collection-due, and open-value revenue projections;
+- explicit unavailable CLOSER-generated/recovered attribution;
+- declined quotes excluded from money due now;
+- tenant switching away from stale customer/conversation routes;
+- visible Human Takeover resume and composer sending/disabled states.
+- persisted Lead source, external source identity, priority, and typed objections;
+- configurable follow-up cadence, attempt/result history, stop reasons, and attempt idempotency;
+- Human Takeover reason/context and human-only internal reply draft behavior;
+- evidence-validated revenue attribution, cross-context rejection, immutability, and refund netting;
+- consent-safe reactivation eligibility, owner approval, cadence, and duplicate prevention;
+- tenant-authorized Owner Copilot reads, approval-gated mutation, and idempotent audit activity;
+- deterministic WhatsApp, Instagram, form, and email ingestion with tenant mismatch and repeat-delivery regressions;
+- v1–v4 to schema-v5 migration, including unattributed revenue defaults.
 
-Rendered QA covered the actual `/actions` screen at 1440×1024, 1100×760, 393×852, and 375×812. The accepted captures are stored outside the repository under `phase-4-1b-command-center`. The review confirmed zero horizontal overflow, one main landmark, Human Takeover ranked first, a directly visible first action, logical Hebrew/English SVG word direction, live WebGL 2 rendering, 44px mobile actions, visible keyboard focus, preserved `/debug`, and a clean browser console. Clinic, auto-detailing, and home-services tenant data were inspected. Reduced motion has dedicated regression coverage and produces the static ambient treatment without a canvas.
+Latest automated result: **17 test files and 152 tests passed**. ESLint passed with zero warnings, strict TypeScript passed, the production build passed, and `npm run verify` passed. A fresh `npm audit` remains part of the final release gate.
 
-The in-app Chromium render confirms the responsive behavior and mobile GPU policy. Native Safari and a physical iPhone GPU trace were not available in this environment; that cross-browser/device pass remains a pre-propagation requirement. Chrome DevTools performance tracing was also unavailable, so no synthetic Core Web Vitals are claimed.
+## Rendered QA
 
-Status: **passed** on 2026-08-13.
+Actual in-app Chromium renders were re-inspected at 1440×1024, 1100×760, 393×852, and 375×812. Direct route loads covered Today, Customers, Human Takeover Customer Workspace, active Human Takeover Conversation, Calendar/Jobs, Money, and More. The pass also covered:
 
-Phase 4 preserves the full Phase 1–3 domain/application suite and adds production-presentation coverage for Today, Inbox, Customer Workspace, tenant switching, navigation, accessible region/link names, empty states, Human Takeover, independent consent flags, closed opportunities, payment truth, and the `ProductReadService` boundary.
+- Today first decision, action density, Human Takeover priority, and WebGL identity;
+- Customers for clinic, auto-detailing, and home-services tenants;
+- Customer Workspace at the top and lower scroll positions;
+- Human Takeover, outstanding balance, and a validated fully-paid/closed-won state;
+- desktop and mobile Conversation context;
+- Work empty/today/recent job/appointment states;
+- Money balances and mixed currency direction;
+- More business/team/automation/payment context;
+- browser back/forward, direct routes, and tenant switching;
+- fixed bottom navigation, dynamic viewport height, and horizontal overflow.
 
-## Exact automated result
+Confirmed fixes included the light legacy island, 1100px top-bar crowding, mobile business-selector weight, hidden mobile Customer Workspace link, all-seven-step journey visibility, compact empty states, and duplicate-looking inert More affordances.
 
-- `npm run lint`: exit 0; ESLint reported no errors or warnings.
-- `npm run typecheck`: exit 0; strict `tsc --noEmit` reported no errors.
-- `npm run test`: exit 0; **11 test files and 108 tests passed**.
-- `npm run build`: exit 0; Vite 7.3.6 transformed 1,854 modules and emitted `dist/index.html` 0.60 kB (0.39 kB gzip), CSS 31.53 kB (6.50 kB gzip), and JavaScript 412.52 kB (124.28 kB gzip).
-- `npm run verify`: exit 0; lint, strict TypeScript, all 108 tests, and the production build passed.
-- `npm audit`: exit 0; found 0 vulnerabilities.
+The live Today render reported one WebGL canvas with `data-renderer="webgl"`; non-Today routes do not import the shader. Automated reduced-motion coverage verifies the static no-canvas fallback. Every inspected page reported `scrollWidth === innerWidth`.
 
-## Presentation regressions covered
+Fresh page loads showed no Vite error overlay; the in-app browser console returned zero warning/error entries after the final owner-route pass. Native Safari and physical-iPhone GPU/thermal profiling were not available, so those are not claimed. Chrome DevTools performance tracing was not configured; bundle/chunk output and responsive interaction were reviewed instead of synthetic Core Web Vitals.
 
-- Today regions resolve to visible headings and repeated actions have customer-specific accessible names.
-- A fully empty Today composition renders calm attention, commitment, and payment empty states.
-- Inbox uses native list/button semantics and keeps explicit Human Takeover/Resume behavior.
-- Operational and marketing consent remain independent and fail closed when no record exists.
-- PAUSED automation is stopped without being mislabeled as Human Takeover.
-- Customer work selects the active/latest opportunity and its exact conversation.
-- Payment/refund metadata is limited to collected payments on the current commercial reference.
-- A scheduled appointment can provide the displayed service when an earlier lead had not yet stored it.
-- A broken active lead/contact relationship remains an explicit integrity failure rather than silently disappearing.
+## Production build
 
-## Browser and visual QA
+Vite 7.3.6 transforms 1,935 modules. The owner application emits:
 
-- Reviewed Today, Inbox list, active conversation, and Customer Workspace at 1440×1024, 1100×760, 393×852, and 375×812.
-- Reviewed clinic, auto-detailing, and home-services tenants; multiple actions; per-section and full empty-state rendering; Human Takeover; assistant-active; quote waiting; scheduled appointment; outstanding balances; and fully paid/closed-won states.
-- Checked long Hebrew, mixed Hebrew/English, phone/email direction, times, currency, 1,200/900 ILS amounts, responsive wrapping, mobile composer/nav behavior, and customer-specific control names.
-- Keyboard route focus, Inbox focus restoration, search focus visibility, touch targets, dynamic viewport sizing, and horizontal overflow were inspected.
-- `/debug` retained decision, tool, schema, financial, and scenario information.
-- Browser console warnings/errors: none.
+- `dist/index.html` 0.60 kB (0.39 kB gzip)
+- main CSS 95.05 kB (17.84 kB gzip)
+- main JavaScript 458.01 kB (136.02 kB gzip)
+- lazy Today JavaScript 136.73 kB (48.07 kB gzip)
+- lazy Today CSS 1.94 kB (0.83 kB gzip)
+- liquid-metal material 297.41 kB
 
-The side-by-side visual review and resolved findings are recorded in [`design-qa.md`](../design-qa.md); its final result is `passed`.
+The main JavaScript chunk is below Vite’s 500 kB advisory. GSAP/OGL and the ambient identity stay in the lazy Today chunk.

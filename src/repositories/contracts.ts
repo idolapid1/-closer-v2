@@ -25,7 +25,7 @@ import type {
 } from '../domain/entities';
 import type { ConversationDecisionRecord } from '../types/assistant';
 
-export const SCHEMA_VERSION = 3 as const;
+export const SCHEMA_VERSION = 5 as const;
 
 export interface DatabaseSchema {
   schemaVersion: typeof SCHEMA_VERSION;

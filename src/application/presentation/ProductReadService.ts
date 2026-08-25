@@ -10,13 +10,16 @@ import {
   PaymentKind,
   PaymentReferenceType,
   PaymentStatus,
+  type WorkflowType,
   type ActivityType,
   type CustomerFactKey,
+  type HandoffReason,
   type QuoteStatus,
 } from '../../domain/entities';
 import type { DatabasePort } from '../../repositories/contracts';
 import type { ActionCenterItem, CommercialOpportunityView } from '../../types/commercial';
 import type { CommercialJourneyService } from '../commercial/CommercialJourneyService';
+import type { RevenueAttributionService } from '../revenue/RevenueAttributionService';
 import { productServiceName } from './productCopy';
 
 export interface ProductActionView extends ActionCenterItem {
@@ -42,6 +45,19 @@ export interface ProductAutomationProofView {
   progressedCustomers: number;
 }
 
+export interface ProductRevenueOverviewView {
+  validatedCollectedCents: number;
+  collectionDueCents: number;
+  openPipelineCents: number;
+  bookedOpportunityCount: number;
+  wonOpportunityCount: number;
+  attribution: {
+    status: 'AVAILABLE' | 'NOT_AVAILABLE';
+    generatedByCloserCents: number | null;
+    recoveredByCloserCents: number | null;
+  };
+}
+
 export interface ProductTodayView {
   asOf: string;
   attention: ProductActionView[];
@@ -49,6 +65,7 @@ export interface ProductTodayView {
   commitments: ProductCommitmentView[];
   activeOpportunityCount: number;
   automation: ProductAutomationProofView;
+  revenue: ProductRevenueOverviewView;
 }
 
 export interface ProductMessageView {
@@ -56,6 +73,12 @@ export interface ProductMessageView {
   body: string;
   sentAt: string;
   side: 'CUSTOMER' | 'BUSINESS' | 'SYSTEM';
+}
+
+export interface ProductHandoffView {
+  reason: HandoffReason;
+  detail: string;
+  startedAt: string;
 }
 
 export interface ProductInboxConversationView {
@@ -72,6 +95,7 @@ export interface ProductInboxConversationView {
   lastMessage: ProductMessageView | null;
   messages: ProductMessageView[];
   suggestedReply: string | null;
+  handoff: ProductHandoffView | null;
   missingInformation: string[];
   updatedAt: string;
 }
@@ -98,6 +122,7 @@ export interface ProductCustomerView {
   serviceName: string | null;
   stage: CommercialOpportunityView['stage'];
   leadStatus: LeadStatus;
+  workflowType: WorkflowType;
   lostReason: CommercialOpportunityView['lostReason'];
   conversationId: string;
   automationStopped: boolean;
@@ -116,6 +141,77 @@ export interface ProductCustomerView {
   facts: Array<{ id: string; key: CustomerFactKey; value: string | number | boolean }>;
   activity: Array<{ id: string; type: ActivityType; occurredAt: string }>;
   suggestedReply: string | null;
+  handoff: ProductHandoffView | null;
+}
+
+export type ProductCustomerGroup =
+  | 'NEEDS_OWNER'
+  | 'READY'
+  | 'WAITING'
+  | 'IN_PROGRESS'
+  | 'PAYMENT'
+  | 'CLOSED';
+
+export interface ProductCustomerSummaryView {
+  contactId: string;
+  customerName: string;
+  serviceName: string | null;
+  stage: CommercialOpportunityView['stage'];
+  leadStatus: LeadStatus;
+  workflowType: WorkflowType;
+  group: ProductCustomerGroup;
+  action: ProductActionView | null;
+  automationStopped: boolean;
+  isHumanActive: boolean;
+  totalCents: number | null;
+  collectedCents: number;
+  remainingBalanceCents: number | null;
+  updatedAt: string;
+}
+
+export interface ProductCustomersView {
+  customers: ProductCustomerSummaryView[];
+}
+
+export interface ProductScheduleItemView {
+  id: string;
+  kind: 'APPOINTMENT' | 'JOB';
+  contactId: string;
+  customerName: string;
+  serviceName: string;
+  startsAt: string | null;
+  appointmentStatus: AppointmentStatus | null;
+  jobStatus: JobStatus | null;
+  totalCents: number;
+  collectedCents: number;
+  remainingBalanceCents: number;
+  depositRequiredCents: number;
+}
+
+export interface ProductScheduleView {
+  asOf: string;
+  items: ProductScheduleItemView[];
+}
+
+export interface ProductMoneyItemView {
+  leadId: string;
+  contactId: string;
+  customerName: string;
+  serviceName: string | null;
+  stage: CommercialOpportunityView['stage'];
+  leadStatus: LeadStatus;
+  totalCents: number;
+  collectedCents: number;
+  remainingBalanceCents: number;
+  collectionDueCents: number;
+  refundCents: number;
+  updatedAt: string;
+}
+
+export interface ProductMoneyView {
+  waitingTotalCents: number;
+  collectedTotalCents: number;
+  items: ProductMoneyItemView[];
 }
 
 export class ProductReadService {
@@ -123,6 +219,7 @@ export class ProductReadService {
     private readonly database: DatabasePort,
     private readonly commercialJourney: CommercialJourneyService,
     private readonly now: () => string,
+    private readonly revenueAttribution?: RevenueAttributionService,
   ) {}
 
   actionCenter(businessId: string): ActionCenterItem[] {
@@ -275,6 +372,7 @@ export class ProductReadService {
         ConversationStage.HumanReview,
       ].includes(stage);
     }).length;
+    const revenue = this.revenueOverview(businessId);
 
     return {
       asOf,
@@ -296,6 +394,60 @@ export class ProductReadService {
         preparedActions,
         informationCollected,
         progressedCustomers,
+      },
+      revenue,
+    };
+  }
+
+  revenueOverview(businessId: string): ProductRevenueOverviewView {
+    const repositories = this.database.repositories;
+    const leads = repositories.leads.list(businessId);
+    const openLeadIds = new Set(
+      leads.filter((lead) => isOpenLead(lead.status)).map((lead) => lead.id),
+    );
+    const opportunities = leads.map(
+      (lead) => this.commercialJourney.evaluate(businessId, lead.id).opportunity,
+    );
+    const payments = repositories.payments
+      .list(businessId)
+      .filter((payment) => payment.status === PaymentStatus.Collected);
+    const validatedCollectedCents = Math.max(
+      0,
+      payments.reduce(
+        (total, payment) =>
+          total + (payment.kind === PaymentKind.Refund ? -payment.amountCents : payment.amountCents),
+        0,
+      ),
+    );
+    const openOpportunities = opportunities.filter((opportunity) =>
+      openLeadIds.has(opportunity.leadId),
+    );
+    const attribution = this.revenueAttribution?.summarize(businessId);
+
+    return {
+      validatedCollectedCents,
+      collectionDueCents: openOpportunities.reduce(
+        (total, opportunity) => total + this.collectionDue(opportunity),
+        0,
+      ),
+      openPipelineCents: openOpportunities.reduce(
+        (total, opportunity) => total + (opportunity.totalCents ?? 0),
+        0,
+      ),
+      bookedOpportunityCount: openOpportunities.filter((opportunity) =>
+        [
+          ConversationStage.AwaitingDeposit,
+          ConversationStage.Booked,
+          ConversationStage.JobScheduled,
+        ].includes(opportunity.stage),
+      ).length,
+      wonOpportunityCount: leads.filter((lead) => lead.status === LeadStatus.Won).length,
+      attribution: {
+        status: attribution?.status ?? 'NOT_AVAILABLE',
+        generatedByCloserCents:
+          attribution?.status === 'AVAILABLE' ? attribution.generatedCents : null,
+        recoveredByCloserCents:
+          attribution?.status === 'AVAILABLE' ? attribution.recoveredCents : null,
       },
     };
   }
@@ -323,6 +475,9 @@ export class ProductReadService {
           .find(businessId, (record) => record.conversationId === conversation.id)
           .sort((first, second) => first.createdAt.localeCompare(second.createdAt))
           .at(-1);
+        const handoff = conversation.handoffId
+          ? repositories.humanHandoffs.get(businessId, conversation.handoffId)
+          : null;
         return {
           id: conversation.id,
           contactId: contact.id,
@@ -354,6 +509,14 @@ export class ProductReadService {
           lastMessage: messages.at(-1) ?? null,
           messages,
           suggestedReply: latestDecision?.decision.suggestedReply ?? null,
+          handoff:
+            handoff && handoff.resolvedAt === null
+              ? {
+                  reason: handoff.reason,
+                  detail: handoff.detail,
+                  startedAt: handoff.startedAt,
+                }
+              : null,
           missingInformation: conversation.missingInformation,
           updatedAt: conversation.lastCustomerMessageAt ?? conversation.updatedAt,
         };
@@ -361,6 +524,171 @@ export class ProductReadService {
       .filter((conversation): conversation is ProductInboxConversationView => conversation !== null)
       .sort((first, second) => second.updatedAt.localeCompare(first.updatedAt));
     return { conversations };
+  }
+
+  customers(businessId: string): ProductCustomersView {
+    const repositories = this.database.repositories;
+    const contactIds = new Set(repositories.leads.list(businessId).map((lead) => lead.contactId));
+    const customers = [...contactIds]
+      .map((contactId): ProductCustomerSummaryView | null => {
+        const customer = this.customer(businessId, contactId);
+        if (!customer) return null;
+        const lead = repositories.leads
+          .find(businessId, (candidate) => candidate.contactId === contactId)
+          .sort((first, second) => {
+            const firstActive = isOpenLead(first.status) ? 1 : 0;
+            const secondActive = isOpenLead(second.status) ? 1 : 0;
+            return secondActive - firstActive || second.updatedAt.localeCompare(first.updatedAt);
+          })[0];
+        if (!lead) return null;
+        return {
+          contactId,
+          customerName: customer.customerName,
+          serviceName: customer.serviceName,
+          stage: customer.stage,
+          leadStatus: customer.leadStatus,
+          workflowType: customer.workflowType,
+          group: customerGroup(customer),
+          action: customer.action,
+          automationStopped: customer.automationStopped,
+          isHumanActive: customer.isHumanActive,
+          totalCents: customer.totalCents,
+          collectedCents: customer.collectedCents,
+          remainingBalanceCents: customer.remainingBalanceCents,
+          updatedAt: lead.updatedAt,
+        };
+      })
+      .filter((customer): customer is ProductCustomerSummaryView => customer !== null)
+      .sort(
+        (first, second) =>
+          customerGroupPriority(first.group) - customerGroupPriority(second.group) ||
+          second.updatedAt.localeCompare(first.updatedAt),
+      );
+    return { customers };
+  }
+
+  schedule(businessId: string): ProductScheduleView {
+    const repositories = this.database.repositories;
+    const business = repositories.businesses.get(businessId, businessId);
+    const contacts = new Map(repositories.contacts.list(businessId).map((contact) => [contact.id, contact]));
+    const services = new Map(repositories.services.list(businessId).map((service) => [service.id, service]));
+    const appointments: ProductScheduleItemView[] = repositories.appointments
+      .list(businessId)
+      .map((appointment) => {
+        const opportunity = this.commercialJourney.evaluate(businessId, appointment.leadId).opportunity;
+        const service = services.get(appointment.serviceId);
+        return {
+          id: appointment.id,
+          kind: 'APPOINTMENT' as const,
+          contactId: appointment.contactId,
+          customerName: contacts.get(appointment.contactId)?.displayName ?? 'לקוח/ה',
+          serviceName: service
+            ? business
+              ? productServiceName(business.kind, service.id, service.name)
+              : service.name
+            : 'תור',
+          startsAt: appointment.startAt,
+          appointmentStatus: appointment.status,
+          jobStatus: null,
+          totalCents: appointment.totalCents,
+          collectedCents: opportunity.collectedCents,
+          remainingBalanceCents: opportunity.remainingBalanceCents ?? 0,
+          depositRequiredCents: appointment.depositRequiredCents,
+        };
+      });
+    const jobs: ProductScheduleItemView[] = repositories.jobs.list(businessId).map((job) => {
+      const opportunity = this.commercialJourney.evaluate(businessId, job.leadId).opportunity;
+      const quote = repositories.quotes.get(businessId, job.quoteId);
+      const lead = repositories.leads.get(businessId, job.leadId);
+      const service = lead?.serviceId ? services.get(lead.serviceId) : null;
+      return {
+        id: job.id,
+        kind: 'JOB' as const,
+        contactId: job.contactId,
+        customerName: contacts.get(job.contactId)?.displayName ?? 'לקוח/ה',
+        serviceName: service
+          ? business
+            ? productServiceName(business.kind, service.id, service.name)
+            : service.name
+          : quote?.items[0]?.description ?? 'עבודה',
+        startsAt: job.scheduledStartAt,
+        appointmentStatus: null,
+        jobStatus: job.status,
+        totalCents: job.totalCents,
+        collectedCents: opportunity.collectedCents,
+        remainingBalanceCents: opportunity.remainingBalanceCents ?? 0,
+        depositRequiredCents: job.depositRequiredCents,
+      };
+    });
+    return {
+      asOf: this.now(),
+      items: [...appointments, ...jobs].sort((first, second) => {
+        if (first.startsAt === null) return 1;
+        if (second.startsAt === null) return -1;
+        return first.startsAt.localeCompare(second.startsAt);
+      }),
+    };
+  }
+
+  money(businessId: string): ProductMoneyView {
+    const repositories = this.database.repositories;
+    const business = repositories.businesses.get(businessId, businessId);
+    const contacts = new Map(repositories.contacts.list(businessId).map((contact) => [contact.id, contact]));
+    const services = new Map(repositories.services.list(businessId).map((service) => [service.id, service]));
+    const items = repositories.leads
+      .list(businessId)
+      .map((lead): ProductMoneyItemView | null => {
+        const opportunity = this.commercialJourney.evaluate(businessId, lead.id).opportunity;
+        if (opportunity.totalCents === null) return null;
+        const service = lead.serviceId ? services.get(lead.serviceId) : null;
+        const reference = opportunity.appointmentId
+          ? { type: PaymentReferenceType.Appointment, id: opportunity.appointmentId }
+          : opportunity.jobId
+            ? { type: PaymentReferenceType.Job, id: opportunity.jobId }
+            : null;
+        const refundCents = reference
+          ? repositories.payments
+              .find(
+                businessId,
+                (payment) =>
+                  payment.contactId === lead.contactId &&
+                  payment.referenceType === reference.type &&
+                  payment.referenceId === reference.id &&
+                  payment.kind === PaymentKind.Refund &&
+                  payment.status === PaymentStatus.Collected,
+              )
+              .reduce((total, payment) => total + payment.amountCents, 0)
+          : 0;
+        return {
+          leadId: lead.id,
+          contactId: lead.contactId,
+          customerName: contacts.get(lead.contactId)?.displayName ?? 'לקוח/ה',
+          serviceName: service
+            ? business
+              ? productServiceName(business.kind, service.id, service.name)
+              : service.name
+            : null,
+          stage: opportunity.stage,
+          leadStatus: lead.status,
+          totalCents: opportunity.totalCents,
+          collectedCents: opportunity.collectedCents,
+          remainingBalanceCents: opportunity.remainingBalanceCents ?? 0,
+          collectionDueCents: isOpenLead(lead.status) ? this.collectionDue(opportunity) : 0,
+          refundCents,
+          updatedAt: lead.updatedAt,
+        };
+      })
+      .filter((item): item is ProductMoneyItemView => item !== null)
+      .sort(
+        (first, second) =>
+          second.remainingBalanceCents - first.remainingBalanceCents ||
+          second.updatedAt.localeCompare(first.updatedAt),
+      );
+    return {
+      waitingTotalCents: items.reduce((total, item) => total + item.collectionDueCents, 0),
+      collectedTotalCents: items.reduce((total, item) => total + item.collectedCents, 0),
+      items,
+    };
   }
 
   customer(businessId: string, contactId: string): ProductCustomerView | null {
@@ -407,6 +735,9 @@ export class ProductReadService {
       .find(businessId, (record) => record.conversationId === conversation.id)
       .sort((first, second) => first.createdAt.localeCompare(second.createdAt))
       .at(-1);
+    const handoff = conversation.handoffId
+      ? repositories.humanHandoffs.get(businessId, conversation.handoffId)
+      : null;
     const consent = repositories.consentRecords.find(
       businessId,
       (record) => record.contactId === contactId,
@@ -427,6 +758,7 @@ export class ProductReadService {
         : null,
       stage: opportunity.stage,
       leadStatus: lead.status,
+      workflowType: lead.workflowType,
       lostReason: lead.lostReason,
       conversationId: conversation.id,
       automationStopped: automationStopped(conversation.mode),
@@ -476,6 +808,14 @@ export class ProductReadService {
         .sort((first, second) => first.occurredAt.localeCompare(second.occurredAt))
         .map((activity) => ({ id: activity.id, type: activity.type, occurredAt: activity.occurredAt })),
       suggestedReply: latestDecision?.decision.suggestedReply ?? null,
+      handoff:
+        handoff && handoff.resolvedAt === null
+          ? {
+              reason: handoff.reason,
+              detail: handoff.detail,
+              startedAt: handoff.startedAt,
+            }
+          : null,
     };
   }
 
@@ -508,6 +848,16 @@ export class ProductReadService {
     }
     return null;
   }
+
+  private collectionDue(opportunity: CommercialOpportunityView): number {
+    if (opportunity.stage === ConversationStage.AwaitingBalance) {
+      return opportunity.remainingBalanceCents ?? 0;
+    }
+    if (opportunity.stage === ConversationStage.AwaitingDeposit) {
+      return this.depositOutstanding(opportunity) ?? 0;
+    }
+    return 0;
+  }
 }
 
 function calendarKey(value: string, timeZone: string): string {
@@ -525,4 +875,23 @@ function automationStopped(mode: ConversationMode): boolean {
 
 function isOpenLead(status: LeadStatus): boolean {
   return [LeadStatus.New, LeadStatus.Active, LeadStatus.Qualified].includes(status);
+}
+
+function customerGroup(customer: ProductCustomerView): ProductCustomerGroup {
+  if (customer.automationStopped || customer.action?.isHumanReview) return 'NEEDS_OWNER';
+  if ((customer.remainingBalanceCents ?? 0) > 0 && customer.stage === ConversationStage.AwaitingBalance) {
+    return 'PAYMENT';
+  }
+  if ([ConversationStage.ReadyToBook, ConversationStage.ReadyForQuote, ConversationStage.QuotePreparation].includes(customer.stage)) {
+    return 'READY';
+  }
+  if ([ConversationStage.Booked, ConversationStage.JobScheduled, ConversationStage.ServiceComplete].includes(customer.stage)) {
+    return 'IN_PROGRESS';
+  }
+  if ([LeadStatus.Won, LeadStatus.Lost, LeadStatus.Archived].includes(customer.leadStatus)) return 'CLOSED';
+  return 'WAITING';
+}
+
+function customerGroupPriority(group: ProductCustomerGroup): number {
+  return ['NEEDS_OWNER', 'READY', 'PAYMENT', 'IN_PROGRESS', 'WAITING', 'CLOSED'].indexOf(group);
 }

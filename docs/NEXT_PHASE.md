@@ -1,14 +1,20 @@
-# Phase 4.1B approval gate
+# Recommended next batch — server trust boundary and durable execution
 
-The authoritative sequence is defined in the [CLOSER Product Bible](PRODUCT_BIBLE.md). One new Home / Command Center prototype is implemented and verified. It remains unapproved until the product owner reviews the real desktop and mobile render.
+The local build now has a coherent owner presentation layer plus deterministic revenue-attribution, follow-up, reactivation, Owner Copilot, and connector boundaries. Do not enable live channel or AI execution before CLOSER has a production server trust boundary.
 
-The product owner should now decide whether this direction:
+Recommended Phase 5 scope:
 
-1. makes CLOSER feel like an active lead-to-cash operator rather than an inbox or CRM;
-2. makes the owner decision count and first action obvious within five seconds;
-3. feels sufficiently premium without sacrificing Hebrew clarity or operational trust; and
-4. should be approved, revised, or rejected before any propagation.
+1. production backend application shell and environment configuration;
+2. authenticated owner sessions and business membership;
+3. server-enforced tenant scope on every repository/use case;
+4. durable relational persistence and safe migration from local demo data where appropriate;
+5. server-side idempotency keys, audit records, and financial/scheduling constraints;
+6. API contracts that preserve `CloserService`/focused-service validation and keep providers untrusted;
+7. durable background-job primitives for existing deterministic follow-up/reactivation records, without connecting customer channels yet;
+8. observability, backups, recovery, and security regression coverage.
+9. webhook inbox/outbox records that verify signatures and bind an external business account server-side before `ingestInboundLeadEvent` is called;
+10. payment-provider webhook reconciliation that can verify collection without trusting browser or customer claims.
 
-Until that decision, do not redesign Inbox or Customer Workspace, add product functionality, implement backend/integrations, or declare the direction approved on the owner's behalf.
+Keep the current deterministic local providers and demo tenants available as a test/simulation mode. Do not combine this phase with real WhatsApp, a payment gateway, calendar sync, or real LLM autonomy. Those follow after the server boundary and durable event ingestion are proven.
 
-After approval, propagate the production UX system. Then establish backend/authentication and the server tenant boundary, durable persistence/event ingestion, WhatsApp integration, real AI in shadow mode, evaluation gates, limited autopilot, integrations, and a focused pilot in the staged order described by the Product Bible.
+Before Phase 5 planning, run a physical iPhone Safari pass on the final Phase 4.2 build, especially mixed Hebrew/English MaskedHeading shaping, safe-area navigation, keyboard/composer behavior, and WebGL thermal impact. The implementation is WebKit-defensive, but native Safari was not available in the current engineering environment.

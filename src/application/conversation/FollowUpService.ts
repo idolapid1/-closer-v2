@@ -1,8 +1,13 @@
 import {
+  ConversationChannel,
   ConversationMode,
   ConversationStage,
+  FollowUpChannel,
+  FollowUpOwner,
+  FollowUpResult,
   FollowUpScenario,
   FollowUpStatus,
+  FollowUpStopReason,
   MessagePurpose,
   NextActionType,
   type Conversation,
@@ -21,6 +26,7 @@ export interface ScheduleFollowUpInput {
   purpose?: MessagePurpose;
   triggeringMessageId?: string;
   reason: string;
+  draftMessage?: string;
 }
 
 export class FollowUpService {
@@ -79,6 +85,20 @@ export class FollowUpService {
       idempotencyKey,
       triggeringMessageId: input.triggeringMessageId ?? null,
       reason: input.reason,
+      sequenceKey: input.scenario,
+      sequenceStep: 0,
+      channel: followUpChannel(conversation.channel),
+      attemptCount: 0,
+      attempts: [],
+      nextAttemptAt: new Date(input.dueAt).toISOString(),
+      lastAttemptAt: null,
+      lastResponseAt: null,
+      stopReason: null,
+      manualOverride: false,
+      owner: FollowUpOwner.Assistant,
+      ownerTeamMemberId: conversation.ownerTeamMemberId,
+      draftMessage: input.draftMessage?.trim() || null,
+      result: FollowUpResult.Pending,
     };
     return repositories.scheduledFollowUps.save(input.businessId, followUp);
   }
@@ -89,14 +109,14 @@ export class FollowUpService {
     triggeringMessageId: string,
     decision: ConversationDecision,
   ): ScheduledFollowUp | null {
-    if (!decision.shouldFollowUp || !decision.recommendedFollowUpAt) return null;
+    if (!decision.shouldFollowUp) return null;
     const scenario = scenarioForDecision(decision);
     if (!scenario) return null;
     return this.schedule({
       businessId,
       conversationId: conversation.id,
       scenario,
-      dueAt: decision.recommendedFollowUpAt,
+      dueAt: this.configuredDueAt(businessId, scenario),
       purpose: MessagePurpose.Operational,
       triggeringMessageId,
       reason: followUpReason(scenario),
@@ -107,7 +127,7 @@ export class FollowUpService {
     businessId: string,
     conversationId: string,
     stage: ConversationStage,
-    dueAt: string,
+    dueAt?: string,
   ): ScheduledFollowUp {
     const scenario = scenarioForStage(stage);
     if (!scenario) throw new DomainError('This stage does not need a follow-up', 'FOLLOW_UP_NOT_REQUIRED');
@@ -115,12 +135,115 @@ export class FollowUpService {
       businessId,
       conversationId,
       scenario,
-      dueAt,
+      dueAt: dueAt ?? this.configuredDueAt(businessId, scenario),
       reason: followUpReason(scenario),
     });
   }
 
-  cancelPending(businessId: string, conversationId: string): ScheduledFollowUp[] {
+  scheduleReactivation(
+    businessId: string,
+    conversationId: string,
+    operationKey: string,
+    draftMessage: string,
+  ): ScheduledFollowUp {
+    return this.schedule({
+      businessId,
+      conversationId,
+      scenario: FollowUpScenario.Reactivation,
+      dueAt: this.configuredDueAt(businessId, FollowUpScenario.Reactivation),
+      purpose: MessagePurpose.Marketing,
+      triggeringMessageId: operationKey,
+      reason: followUpReason(FollowUpScenario.Reactivation),
+      draftMessage,
+    });
+  }
+
+  completeForCustomerResponse(
+    businessId: string,
+    conversationId: string,
+  ): ScheduledFollowUp[] {
+    const repositories = this.database.repositories;
+    return repositories.scheduledFollowUps
+      .find(
+        businessId,
+        (followUp) =>
+          followUp.conversationId === conversationId &&
+          followUp.status === FollowUpStatus.Scheduled,
+      )
+      .map((followUp) =>
+        repositories.scheduledFollowUps.save(businessId, {
+          ...followUp,
+          updatedAt: this.now(),
+          status: FollowUpStatus.Completed,
+          nextAttemptAt: null,
+          lastResponseAt: this.now(),
+          stopReason: FollowUpStopReason.CustomerReplied,
+          result: FollowUpResult.ResponseReceived,
+        }),
+      );
+  }
+
+  recordAttempt(
+    businessId: string,
+    followUpId: string,
+    result: FollowUpResult.Sent | FollowUpResult.Failed,
+    operationKey: string,
+  ): ScheduledFollowUp {
+    const repositories = this.database.repositories;
+    const followUp = required(
+      repositories.scheduledFollowUps.get(businessId, followUpId),
+      'Follow-up not found',
+    );
+    const normalizedOperationKey = operationKey.trim();
+    if (!normalizedOperationKey) {
+      throw new DomainError('Follow-up attempt operation key is required', 'INVALID_OPERATION_KEY');
+    }
+    const existingAttempt = followUp.attempts.find(
+      (attempt) => attempt.operationKey === normalizedOperationKey,
+    );
+    if (existingAttempt) {
+      if (existingAttempt.result !== result) {
+        throw new DomainError(
+          'Follow-up attempt operation key was reused with different facts',
+          'IDEMPOTENCY_CONFLICT',
+        );
+      }
+      return followUp;
+    }
+    if (followUp.status !== FollowUpStatus.Scheduled) {
+      throw new DomainError('Only a scheduled follow-up can record an attempt', 'FOLLOW_UP_NOT_SCHEDULED');
+    }
+    const settings = required(
+      repositories.businessSettings.list(businessId)[0] ?? null,
+      'Business settings not found',
+    );
+    const nextStep = followUp.sequenceStep + 1;
+    const nextDelayHours = settings.followUpCadenceHours[followUp.scenario]?.[nextStep];
+    const nextAttemptAt =
+      nextDelayHours === undefined ? null : addHours(this.now(), nextDelayHours);
+    return repositories.scheduledFollowUps.save(businessId, {
+      ...followUp,
+      updatedAt: this.now(),
+      status: nextAttemptAt ? FollowUpStatus.Scheduled : FollowUpStatus.Completed,
+      dueAt: nextAttemptAt ?? followUp.dueAt,
+      sequenceStep: nextStep,
+      attemptCount: followUp.attemptCount + 1,
+      attempts: [
+        ...followUp.attempts,
+        { operationKey: normalizedOperationKey, result, attemptedAt: this.now() },
+      ],
+      nextAttemptAt,
+      lastAttemptAt: this.now(),
+      result,
+    });
+  }
+
+  cancelPending(
+    businessId: string,
+    conversationId: string,
+    stopReason: FollowUpStopReason = FollowUpStopReason.StateChanged,
+    manualOverride = false,
+  ): ScheduledFollowUp[] {
     const repositories = this.database.repositories;
     return repositories.scheduledFollowUps
       .find(
@@ -134,14 +257,45 @@ export class FollowUpService {
           ...followUp,
           updatedAt: this.now(),
           status: FollowUpStatus.Cancelled,
+          nextAttemptAt: null,
+          stopReason,
+          manualOverride,
+          owner: manualOverride ? FollowUpOwner.Human : followUp.owner,
+          result: FollowUpResult.Stopped,
         }),
       );
+  }
+
+  private configuredDueAt(businessId: string, scenario: FollowUpScenario): string {
+    const settings = required(
+      this.database.repositories.businessSettings.list(businessId)[0] ?? null,
+      'Business settings not found',
+    );
+    const firstDelayHours = settings.followUpCadenceHours[scenario]?.[0];
+    if (firstDelayHours === undefined) {
+      throw new DomainError(
+        `No follow-up cadence is configured for ${scenario}`,
+        'FOLLOW_UP_CADENCE_MISSING',
+      );
+    }
+    return addHours(this.now(), firstDelayHours);
   }
 
   private base(businessId: string): TenantEntity {
     const at = this.now();
     return { id: this.id(), businessId, createdAt: at, updatedAt: at };
   }
+}
+
+function followUpChannel(channel: ConversationChannel): FollowUpChannel {
+  if (channel === ConversationChannel.WhatsApp) return FollowUpChannel.WhatsApp;
+  if (channel === ConversationChannel.Instagram) return FollowUpChannel.Instagram;
+  if (channel === ConversationChannel.Email) return FollowUpChannel.Email;
+  return FollowUpChannel.Manual;
+}
+
+function addHours(value: string, hours: number): string {
+  return new Date(new Date(value).getTime() + hours * 60 * 60 * 1000).toISOString();
 }
 
 function scenarioForDecision(decision: ConversationDecision): FollowUpScenario | null {
@@ -178,6 +332,7 @@ function followUpReason(scenario: FollowUpScenario): string {
     [FollowUpScenario.QuoteResponse]: 'Follow up on the quote if the customer has not replied.',
     [FollowUpScenario.DepositRequest]: 'Remind the customer about the required deposit.',
     [FollowUpScenario.OutstandingBalance]: 'Request the remaining payment for completed work.',
+    [FollowUpScenario.Reactivation]: 'Reconnect with an eligible past customer after owner approval.',
   };
   return reasons[scenario];
 }
