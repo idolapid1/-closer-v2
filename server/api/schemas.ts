@@ -8,6 +8,16 @@ export const tenantProvisionSchema = z.object({
   idempotencyKey: idempotencyKeySchema,
 });
 
+export const invitationCreationSchema = z.object({
+  email: z.email(),
+  role: z.enum(['admin', 'member']),
+  idempotencyKey: idempotencyKeySchema,
+});
+
+export const invitationAcceptanceSchema = z.object({
+  token: z.string().min(32).max(256).regex(/^[A-Za-z0-9_-]+$/),
+});
+
 export const journeyCreationSchema = z.object({
   idempotencyKey: idempotencyKeySchema,
   customer: z.object({

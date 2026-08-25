@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readdir, readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { loadServerConfig } from './config.js';
+import { loadDatabaseConfig } from './config.js';
 import { createPostgresPool } from './infrastructure/postgres.js';
 
 export async function runMigrations(databaseUrl: string): Promise<void> {
@@ -53,6 +53,6 @@ export async function runMigrations(databaseUrl: string): Promise<void> {
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const config = loadServerConfig();
+  const config = loadDatabaseConfig();
   await runMigrations(config.DATABASE_URL);
 }

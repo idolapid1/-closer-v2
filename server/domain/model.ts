@@ -24,6 +24,35 @@ export interface TenantProvisionResult {
   replayed: boolean;
 }
 
+export interface OrganizationInvitationRecord {
+  id: string;
+  tenantId: string;
+  email: string;
+  role: Exclude<OrganizationRole, 'owner'>;
+  expiresAt: string;
+  acceptedAt: string | null;
+  revokedAt: string | null;
+  createdAt: string;
+  replayed: boolean;
+}
+
+export interface OrganizationInvitationCreationInput {
+  email: string;
+  role: Exclude<OrganizationRole, 'owner'>;
+  idempotencyKey: string;
+}
+
+export interface OrganizationInvitationCreationRecord extends OrganizationInvitationCreationInput {
+  tokenHash: string;
+  expiresAt: string;
+}
+
+export interface InvitationAcceptanceResult {
+  tenantId: string;
+  role: Exclude<OrganizationRole, 'owner'>;
+  replayed: boolean;
+}
+
 export interface CustomerRecord {
   id: string;
   tenantId: string;
@@ -40,7 +69,51 @@ export interface ConversationRecord {
   leadId: string;
   channel: string;
   mode: 'AI_ACTIVE' | 'HUMAN_ACTIVE' | 'PAUSED' | 'CLOSED';
+  stage: string;
+  lastCustomerMessageAt: string | null;
+  lastBusinessResponseAt: string | null;
   createdAt: string;
+  updatedAt: string;
+}
+
+export interface LeadRecordView {
+  id: string;
+  tenantId: string;
+  customerId: string;
+  conversationId: string;
+  serviceId: string | null;
+  source: string;
+  workflowType: 'APPOINTMENT_SERVICE' | 'QUOTE_JOB';
+  salesState: string;
+  status: 'NEW' | 'ACTIVE' | 'QUALIFIED' | 'WON' | 'LOST' | 'ARCHIVED';
+  priority: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface HumanHandoffRecord {
+  id: string;
+  tenantId: string;
+  conversationId: string;
+  reason: string;
+  detail: string;
+  startedAt: string;
+  resolvedAt: string | null;
+}
+
+export interface PaymentRecordView {
+  id: string;
+  tenantId: string;
+  customerId: string;
+  leadId: string;
+  conversationId: string;
+  referenceType: 'APPOINTMENT' | 'QUOTE' | 'JOB';
+  referenceId: string;
+  kind: 'DEPOSIT' | 'BALANCE' | 'REFUND';
+  status: 'COLLECTED' | 'FAILED' | 'VOIDED';
+  amountCents: number;
+  originalPaymentId: string | null;
+  collectedAt: string;
 }
 
 export interface RevenueSummary {
@@ -82,6 +155,23 @@ export interface FollowUpJobRecord {
   idempotencyKey: string;
   draftMessage: string | null;
   createdAt: string;
+}
+
+export interface CustomerWorkspaceRecord {
+  customer: CustomerRecord;
+  lead: LeadRecordView | null;
+  conversation: ConversationRecord | null;
+  followUps: FollowUpJobRecord[];
+  activeHandoff: HumanHandoffRecord | null;
+  payments: PaymentRecordView[];
+}
+
+export interface OwnerSnapshotRecord {
+  customers: CustomerRecord[];
+  conversations: ConversationRecord[];
+  followUps: FollowUpJobRecord[];
+  activeHandoffs: HumanHandoffRecord[];
+  revenue: RevenueSummary;
 }
 
 export interface ConnectorConfigurationView {

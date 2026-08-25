@@ -1,8 +1,10 @@
-# Production Foundation v1 test report
+# Production Activation v1 test report
 
 Status: the complete local quality gate passed on 2026-08-25 using the supported bundled Node 24.19.0 runtime. `src/test/setup.ts` remains unchanged; the test command disables Node's experimental global Web Storage so jsdom owns browser `localStorage`.
 
 Client/jsdom and server/Node tests now use separate Vitest configurations. This preserves the browser setup exactly as before and prevents a Node test from pretending a browser global exists.
+
+Production Activation adds an opt-in PostgreSQL integration configuration. The default suite never guesses a database URL; `npm run test:postgres` requires an explicit, dedicated `TEST_DATABASE_URL` and refuses to reuse `DATABASE_URL` implicitly.
 
 ## Automated coverage
 
@@ -42,12 +44,20 @@ The suite preserves all Phase 1–3 domain/application scenarios and adds owner-
 - concurrent follow-up worker leasing with one deterministic send;
 - typed production API client authentication and explicit demo/production modes;
 - source-controlled migration coverage for durable tables, `SKIP LOCKED`, and RLS.
+- explicit DEMO/PRODUCTION browser configuration with no production-to-demo fallback;
+- Supabase-compatible session restore, sign-in/sign-up, sign-out, expiry, one-shot refresh, and duplicate-expiry handling;
+- server-authorized tenant onboarding, active-tenant selection, removed-membership handling, and stale-response rejection;
+- production Today and Customer Workspace read models, Human Takeover priority, durable follow-up creation, and verified money rendering;
+- hashed, expiring, email-bound, revocable, single-use invitations with development-only raw-token delivery;
+- liveness/readiness separation, safe dependency errors, distributed rate-limiter interface, and explicit worker lifecycle;
+- checksummed `0002` migration plus real-schema verification for critical tables, indexes, RLS policies, and worker claim function;
+- an isolated real-PostgreSQL suite that applies migrations twice and verifies persistence across API restart when `TEST_DATABASE_URL` is supplied.
 
-Latest automated result: **19 test files and 182 tests passed**: 155 browser/domain/application tests and 27 server/auth/security tests. ESLint passed with zero warnings, both strict TypeScript projects passed, the client and server production builds passed, `npm run verify` passed, and the fresh npm audit reported 0 vulnerabilities.
+Latest automated result: **25 test files and 208 tests passed**: 169 browser/domain/application tests and 39 server/auth/security tests. ESLint passed with zero warnings, both strict TypeScript projects passed, the demo client and server builds passed, the separately configured production client and server build passed, `npm run verify` passed, and the fresh npm audit reported 0 vulnerabilities.
 
 ## Rendered QA
 
-Actual in-app Chromium renders were re-inspected at 1440×1024, 1100×760, 393×852, and 375×812. Direct route loads covered Today, Customers, Human Takeover Customer Workspace, active Human Takeover Conversation, Calendar/Jobs, Money, and More. The pass also covered:
+The existing owner experience was regression-checked again in the in-app Chromium browser at 1440×1024 and 393×852. Direct navigation covered Today, Customers, Human Takeover Customer Workspace, and active Human Takeover Conversation. The pass confirmed RTL, working mobile navigation, fixed safe-area navigation, customer/conversation route continuity, zero horizontal overflow, and an empty warning/error console. The broader Phase 4 visual pass remains recorded below:
 
 - Today first decision, action density, Human Takeover priority, and WebGL identity;
 - Customers for clinic, auto-detailing, and home-services tenants;
@@ -68,15 +78,16 @@ Fresh page loads showed no Vite error overlay; the in-app browser console return
 
 ## Production build
 
-Vite 7.3.6 transforms 1,935 modules. The owner application emits:
+The authenticated production build transforms 1,987 modules and emits:
 
 - `dist/index.html` 0.60 kB (0.39 kB gzip)
-- main CSS 95.05 kB (17.84 kB gzip)
-- main JavaScript 458.01 kB (136.02 kB gzip)
+- main CSS 103.46 kB (19.20 kB gzip)
+- main JavaScript 460.22 kB (137.16 kB gzip)
 - lazy Today JavaScript 136.73 kB (48.07 kB gzip)
 - lazy Today CSS 1.94 kB (0.83 kB gzip)
+- lazy Production App JavaScript 255.19 kB (67.35 kB gzip)
 - liquid-metal material 297.41 kB
 
-The main JavaScript chunk is below Vite’s 500 kB advisory. GSAP/OGL and the ambient identity stay in the lazy Today chunk.
+The main JavaScript chunk remains below Vite’s 500 kB advisory. Supabase/Auth and production pages stay in the lazy Production App chunk; GSAP/OGL and the ambient identity stay in the lazy Today chunk.
 
-The server build also emits strict ESM JavaScript and declarations under ignored `dist-server/server/`; the source migration remains under `server/migrations/`. Docker/`psql` were unavailable in this environment, so migration application against a live PostgreSQL 16 instance is not claimed.
+The server build also emits strict ESM JavaScript and declarations under ignored `dist-server/server/`; both source migrations remain under `server/migrations/`. This environment supplied no Supabase credentials, `TEST_DATABASE_URL`, Docker, or `psql`, so hosted migration, real Auth, the real-PostgreSQL integration suite, and authenticated reload against Supabase are not claimed.

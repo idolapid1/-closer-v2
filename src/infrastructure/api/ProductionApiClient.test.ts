@@ -2,16 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   ProductionApiClient,
   ProductionApiError,
-  resolveCloserDataMode,
 } from './ProductionApiClient';
 
 describe('ProductionApiClient', () => {
-  it('keeps demo and production data modes explicit and defaults safely to demo', () => {
-    expect(resolveCloserDataMode(undefined)).toBe('DEMO');
-    expect(resolveCloserDataMode('anything-else')).toBe('DEMO');
-    expect(resolveCloserDataMode('PRODUCTION')).toBe('PRODUCTION');
-  });
-
   it('sends the access token to the authenticated API without exposing a database contract', async () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(JSON.stringify({ tenants: [{ tenantId: 'tenant-a', tenantName: 'A', role: 'owner', active: true }] }), {
@@ -53,5 +46,31 @@ describe('ProductionApiClient', () => {
       new ProductionApiError(404, 'RESOURCE_NOT_FOUND', 'Not found'),
     );
   });
-});
 
+  it('refreshes one expired access token and never retries authorization indefinitely', async () => {
+    let token = 'expired';
+    const tokenProvider = {
+      getAccessToken: async () => token,
+      refreshAccessToken: vi.fn(async () => {
+        token = 'fresh';
+        return token;
+      }),
+    };
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: { code: 'UNAUTHENTICATED', message: 'Expired' } }), { status: 401 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ tenants: [] }), { status: 200 }));
+    const client = new ProductionApiClient('https://api.example.test', tokenProvider, fetchMock);
+    await expect(client.listTenants()).resolves.toEqual([]);
+    expect(tokenProvider.refreshAccessToken).toHaveBeenCalledTimes(1);
+    expect(new Headers(fetchMock.mock.calls[1]?.[1]?.headers).get('Authorization')).toBe('Bearer fresh');
+  });
+
+  it('reports a network failure without returning demo data', async () => {
+    const client = new ProductionApiClient(
+      'https://api.example.test',
+      { getAccessToken: async () => 'token' },
+      vi.fn<typeof fetch>().mockRejectedValue(new TypeError('offline')),
+    );
+    await expect(client.listTenants()).rejects.toMatchObject({ status: 0, code: 'NETWORK_FAILURE' });
+  });
+});

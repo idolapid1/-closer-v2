@@ -9,12 +9,20 @@ import type {
   CopilotExecutionInput,
   CopilotExecutionResult,
   CustomerRecord,
+  CustomerWorkspaceRecord,
   FollowUpJobRecord,
+  HumanHandoffRecord,
   JourneyCreationInput,
   JourneyCreationResult,
+  InvitationAcceptanceResult,
+  LeadRecordView,
+  OrganizationInvitationCreationRecord,
+  OrganizationInvitationRecord,
   OrganizationMembership,
+  OwnerSnapshotRecord,
   PaymentCreationInput,
   PaymentCreationResult,
+  PaymentRecordView,
   RevenueLedgerEntry,
   RevenueSummary,
   TenantProvisionInput,
@@ -33,6 +41,8 @@ interface LeadRecord {
   serviceId: string | null;
   status: 'NEW' | 'ACTIVE' | 'LOST' | 'WON';
   marketingAllowed: boolean;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 interface BookingRecord {
@@ -57,6 +67,11 @@ interface IdempotencyRecord {
   requestHash: string;
   status: 'started' | 'completed';
   response: unknown;
+}
+
+interface InMemoryInvitation extends OrganizationInvitationRecord {
+  tokenHash: string;
+  idempotencyKey: string;
 }
 
 export interface InMemoryProductionSeed {
@@ -87,6 +102,7 @@ export class InMemoryProductionStore implements ProductionStore {
   private readonly followUpAttempts = new Set<string>();
   private readonly humanHandoffs = new Map<string, { id: string; resolvedAt: string | null }>();
   private readonly tenantProvisions = new Map<string, { name: string; result: TenantProvisionResult }>();
+  private readonly invitations: InMemoryInvitation[] = [];
 
   constructor(seed: InMemoryProductionSeed = {}) {
     this.memberships = structuredClone(seed.memberships ?? []);
@@ -145,6 +161,74 @@ export class InMemoryProductionStore implements ProductionStore {
     );
   }
 
+  async listFollowUps(tenantId: string): Promise<FollowUpJobRecord[]> {
+    return structuredClone(this.followUps.filter((followUp) => followUp.tenantId === tenantId));
+  }
+
+  async getCustomerWorkspace(tenantId: string, customerId: string): Promise<CustomerWorkspaceRecord | null> {
+    const customer = this.customers.find(
+      (candidate) => candidate.tenantId === tenantId && candidate.id === customerId,
+    );
+    if (!customer) return null;
+    const lead = [...this.leads]
+      .reverse()
+      .find((candidate) => candidate.tenantId === tenantId && candidate.customerId === customerId);
+    const conversation = lead
+      ? this.conversations.find(
+        (candidate) => candidate.tenantId === tenantId && candidate.id === lead.conversationId,
+      ) ?? null
+      : null;
+    const handoff = conversation ? this.humanHandoffs.get(handoffKey(tenantId, conversation.id)) : undefined;
+    const activeHandoff: HumanHandoffRecord | null = handoff?.resolvedAt === null && conversation
+      ? {
+          id: handoff.id,
+          tenantId,
+          conversationId: conversation.id,
+          reason: 'MANUAL',
+          detail: 'Human Takeover is active',
+          startedAt: conversation.updatedAt,
+          resolvedAt: null,
+        }
+      : null;
+    return structuredClone({
+      customer,
+      lead: lead ? toLeadView(lead) : null,
+      conversation,
+      followUps: this.followUps.filter(
+        (candidate) => candidate.tenantId === tenantId && candidate.customerId === customerId,
+      ),
+      activeHandoff,
+      payments: this.payments
+        .filter((payment) => payment.tenantId === tenantId && payment.customerId === customerId)
+        .map(toPaymentView),
+    });
+  }
+
+  async getOwnerSnapshot(tenantId: string): Promise<OwnerSnapshotRecord> {
+    const conversations = await this.listConversations(tenantId);
+    const activeHandoffs = conversations.flatMap((conversation): HumanHandoffRecord[] => {
+      const handoff = this.humanHandoffs.get(handoffKey(tenantId, conversation.id));
+      return handoff?.resolvedAt === null
+        ? [{
+            id: handoff.id,
+            tenantId,
+            conversationId: conversation.id,
+            reason: 'MANUAL',
+            detail: 'Human Takeover is active',
+            startedAt: conversation.updatedAt,
+            resolvedAt: null,
+          }]
+        : [];
+    });
+    return {
+      customers: await this.listCustomers(tenantId),
+      conversations,
+      followUps: await this.listFollowUps(tenantId),
+      activeHandoffs,
+      revenue: await this.getRevenueSummary(tenantId),
+    };
+  }
+
   async getRevenueSummary(tenantId: string): Promise<RevenueSummary> {
     const totals: RevenueSummary = {
       potentialCents: 0,
@@ -170,18 +254,108 @@ export class InMemoryProductionStore implements ProductionStore {
     return structuredClone(this.connectors.filter((connector) => connector.tenantId === tenantId));
   }
 
+  async createInvitation(
+    tenantId: string,
+    _actor: AuthenticatedIdentity,
+    input: OrganizationInvitationCreationRecord,
+    now: string,
+  ): Promise<OrganizationInvitationRecord> {
+    const existing = this.invitations.find(
+      (candidate) => candidate.tenantId === tenantId && candidate.idempotencyKey === input.idempotencyKey,
+    );
+    if (existing) {
+      if (existing.email !== input.email || existing.role !== input.role) {
+        throw new ApiError(409, 'IDEMPOTENCY_CONFLICT', 'Invitation key was reused with different input');
+      }
+      return { ...publicInvitation(existing), replayed: true };
+    }
+    const invitation: InMemoryInvitation = {
+      id: randomUUID(),
+      tenantId,
+      email: input.email,
+      role: input.role,
+      expiresAt: input.expiresAt,
+      acceptedAt: null,
+      revokedAt: null,
+      createdAt: now,
+      replayed: false,
+      tokenHash: input.tokenHash,
+      idempotencyKey: input.idempotencyKey,
+    };
+    this.invitations.push(invitation);
+    return publicInvitation(invitation);
+  }
+
+  async acceptInvitation(
+    tokenHash: string,
+    actor: AuthenticatedIdentity,
+    now: string,
+  ): Promise<InvitationAcceptanceResult> {
+    const invitation = this.invitations.find((candidate) => candidate.tokenHash === tokenHash);
+    if (!invitation) throw new ApiError(404, 'INVITATION_NOT_FOUND', 'Invitation is invalid');
+    if (invitation.revokedAt) throw new ApiError(410, 'INVITATION_REVOKED', 'Invitation was revoked');
+    if (invitation.acceptedAt) throw new ApiError(409, 'INVITATION_ALREADY_USED', 'Invitation was already accepted');
+    if (new Date(invitation.expiresAt).getTime() <= new Date(now).getTime()) {
+      throw new ApiError(410, 'INVITATION_EXPIRED', 'Invitation expired');
+    }
+    if (!actor.email || actor.email.toLowerCase() !== invitation.email.toLowerCase()) {
+      throw new ApiError(403, 'INVITATION_EMAIL_MISMATCH', 'Invitation belongs to a different account');
+    }
+    const existing = this.memberships.find(
+      (entry) => entry.userId === actor.userId && entry.membership.tenantId === invitation.tenantId,
+    );
+    if (existing) {
+      existing.membership.active = true;
+      existing.membership.role = invitation.role;
+    } else {
+      this.memberships.push({
+        userId: actor.userId,
+        membership: {
+          tenantId: invitation.tenantId,
+          tenantName: this.memberships.find(
+            (entry) => entry.membership.tenantId === invitation.tenantId,
+          )?.membership.tenantName ?? 'CLOSER',
+          role: invitation.role,
+          active: true,
+        },
+      });
+    }
+    invitation.acceptedAt = now;
+    return { tenantId: invitation.tenantId, role: invitation.role, replayed: false };
+  }
+
+  async revokeInvitation(
+    tenantId: string,
+    invitationId: string,
+    _actor: AuthenticatedIdentity,
+    now: string,
+  ): Promise<OrganizationInvitationRecord | null> {
+    const invitation = this.invitations.find(
+      (candidate) => candidate.tenantId === tenantId && candidate.id === invitationId,
+    );
+    if (!invitation) return null;
+    if (invitation.acceptedAt) throw new ApiError(409, 'INVITATION_ALREADY_USED', 'Accepted invitation cannot be revoked');
+    invitation.revokedAt ??= now;
+    return publicInvitation(invitation);
+  }
+
   async startHumanTakeover(
     tenantId: string,
     conversationId: string,
+    _actor: AuthenticatedIdentity,
+    _reason: string,
+    now: string,
   ): Promise<{ conversationId: string; handoffId: string; mode: 'HUMAN_ACTIVE' }> {
     const conversation = this.conversations.find(
       (candidate) => candidate.tenantId === tenantId && candidate.id === conversationId,
     );
     if (!conversation) throw new ApiError(404, 'RESOURCE_NOT_FOUND', 'The requested resource was not found');
-    const existing = this.humanHandoffs.get(conversationId);
+    const key = handoffKey(tenantId, conversationId);
+    const existing = this.humanHandoffs.get(key);
     const handoffId = existing?.resolvedAt === null ? existing.id : randomUUID();
-    this.humanHandoffs.set(conversationId, { id: handoffId, resolvedAt: null });
+    this.humanHandoffs.set(key, { id: handoffId, resolvedAt: null });
     conversation.mode = 'HUMAN_ACTIVE';
+    conversation.updatedAt = now;
     for (const followUp of this.followUps.filter(
       (candidate) => candidate.tenantId === tenantId && candidate.conversationId === conversationId,
     )) {
@@ -203,12 +377,13 @@ export class InMemoryProductionStore implements ProductionStore {
       (candidate) => candidate.tenantId === tenantId && candidate.id === conversationId,
     );
     if (!conversation) throw new ApiError(404, 'RESOURCE_NOT_FOUND', 'The requested resource was not found');
-    const handoff = this.humanHandoffs.get(conversationId);
+    const handoff = this.humanHandoffs.get(handoffKey(tenantId, conversationId));
     if (!handoff || handoff.resolvedAt !== null || conversation.mode !== 'HUMAN_ACTIVE') {
       throw new ApiError(409, 'NO_ACTIVE_HANDOFF', 'No active Human Takeover can be resumed');
     }
     handoff.resolvedAt = now;
     conversation.mode = 'AI_ACTIVE';
+    conversation.updatedAt = now;
     return { conversationId, mode: 'AI_ACTIVE' };
   }
 
@@ -272,6 +447,8 @@ export class InMemoryProductionStore implements ProductionStore {
       serviceId: input.lead.serviceId,
       status: 'NEW',
       marketingAllowed: false,
+      createdAt: now,
+      updatedAt: now,
     });
     this.conversations.push({
       id: conversationId,
@@ -280,7 +457,11 @@ export class InMemoryProductionStore implements ProductionStore {
       leadId,
       channel: input.conversation.channel,
       mode: 'AI_ACTIVE',
+      stage: 'NEW_INQUIRY',
+      lastCustomerMessageAt: null,
+      lastBusinessResponseAt: null,
       createdAt: now,
+      updatedAt: now,
     });
     return { customerId, leadId, conversationId, replayed: false };
   }
@@ -675,4 +856,57 @@ export class InMemoryProductionStore implements ProductionStore {
     }
     return followUp;
   }
+}
+
+function handoffKey(tenantId: string, conversationId: string): string {
+  return `${tenantId}:${conversationId}`;
+}
+
+function toLeadView(lead: LeadRecord): LeadRecordView {
+  const createdAt = lead.createdAt ?? new Date(0).toISOString();
+  return {
+    id: lead.id,
+    tenantId: lead.tenantId,
+    customerId: lead.customerId,
+    conversationId: lead.conversationId,
+    serviceId: lead.serviceId,
+    source: lead.source,
+    workflowType: lead.workflowType as LeadRecordView['workflowType'],
+    salesState: lead.status.toLowerCase(),
+    status: lead.status,
+    priority: 'NORMAL',
+    createdAt,
+    updatedAt: lead.updatedAt ?? createdAt,
+  };
+}
+
+function toPaymentView(payment: PaymentRecord): PaymentRecordView {
+  return {
+    id: payment.id,
+    tenantId: payment.tenantId,
+    customerId: payment.customerId,
+    leadId: payment.leadId,
+    conversationId: payment.conversationId,
+    referenceType: payment.referenceType,
+    referenceId: payment.referenceId,
+    kind: payment.kind,
+    status: 'COLLECTED',
+    amountCents: payment.amountCents,
+    originalPaymentId: payment.originalPaymentId,
+    collectedAt: payment.createdAt,
+  };
+}
+
+function publicInvitation(invitation: InMemoryInvitation): OrganizationInvitationRecord {
+  return structuredClone({
+    id: invitation.id,
+    tenantId: invitation.tenantId,
+    email: invitation.email,
+    role: invitation.role,
+    expiresAt: invitation.expiresAt,
+    acceptedAt: invitation.acceptedAt,
+    revokedAt: invitation.revokedAt,
+    createdAt: invitation.createdAt,
+    replayed: invitation.replayed,
+  });
 }

@@ -6,12 +6,17 @@ import type {
   CopilotExecutionInput,
   CopilotExecutionResult,
   CustomerRecord,
+  CustomerWorkspaceRecord,
   FollowUpJobRecord,
   JourneyCreationInput,
   JourneyCreationResult,
+  InvitationAcceptanceResult,
+  OrganizationInvitationCreationRecord,
+  OrganizationInvitationRecord,
   OrganizationMembership,
   PaymentCreationInput,
   PaymentCreationResult,
+  OwnerSnapshotRecord,
   RevenueLedgerEntry,
   RevenueSummary,
   TenantProvisionInput,
@@ -36,8 +41,28 @@ export interface ProductionStore {
   getMembership(userId: string, tenantId: string): Promise<OrganizationMembership | null>;
   listCustomers(tenantId: string): Promise<CustomerRecord[]>;
   listConversations(tenantId: string): Promise<ConversationRecord[]>;
+  listFollowUps(tenantId: string): Promise<FollowUpJobRecord[]>;
+  getCustomerWorkspace(tenantId: string, customerId: string): Promise<CustomerWorkspaceRecord | null>;
+  getOwnerSnapshot(tenantId: string): Promise<OwnerSnapshotRecord>;
   getRevenueSummary(tenantId: string): Promise<RevenueSummary>;
   listConnectorConfigurations(tenantId: string): Promise<ConnectorConfigurationView[]>;
+  createInvitation(
+    tenantId: string,
+    actor: AuthenticatedIdentity,
+    input: OrganizationInvitationCreationRecord,
+    now: string,
+  ): Promise<OrganizationInvitationRecord>;
+  acceptInvitation(
+    tokenHash: string,
+    actor: AuthenticatedIdentity,
+    now: string,
+  ): Promise<InvitationAcceptanceResult>;
+  revokeInvitation(
+    tenantId: string,
+    invitationId: string,
+    actor: AuthenticatedIdentity,
+    now: string,
+  ): Promise<OrganizationInvitationRecord | null>;
   startHumanTakeover(
     tenantId: string,
     conversationId: string,

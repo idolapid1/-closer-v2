@@ -10,12 +10,20 @@ import type {
   CopilotExecutionInput,
   CopilotExecutionResult,
   CustomerRecord,
+  CustomerWorkspaceRecord,
   FollowUpJobRecord,
+  HumanHandoffRecord,
   JourneyCreationInput,
   JourneyCreationResult,
+  InvitationAcceptanceResult,
+  LeadRecordView,
+  OrganizationInvitationCreationRecord,
+  OrganizationInvitationRecord,
   OrganizationMembership,
+  OwnerSnapshotRecord,
   PaymentCreationInput,
   PaymentCreationResult,
+  PaymentRecordView,
   RevenueLedgerEntry,
   RevenueSummary,
   TenantProvisionInput,
@@ -74,6 +82,7 @@ export class PostgresProductionStore implements ProductionStore {
          VALUES ($1,$2,$3,$4,$5)`,
         [appUserId, input.idempotencyKey, requestHash, tenantId, now],
       );
+      await this.insertAudit(client, tenantId, actor, 'tenant.provisioned', 'tenant', tenantId, now);
       return { tenantId, role: 'owner', replayed: false };
     });
   }
@@ -134,19 +143,96 @@ export class PostgresProductionStore implements ProductionStore {
 
   async listConversations(tenantId: string): Promise<ConversationRecord[]> {
     const result = await this.pool.query(
-      `SELECT id, tenant_id, customer_id, lead_id, channel, mode, created_at
+      `SELECT id, tenant_id, customer_id, lead_id, channel, mode, stage,
+              last_customer_message_at, last_business_response_at, created_at, updated_at
        FROM conversations WHERE tenant_id = $1 ORDER BY created_at DESC`,
       [tenantId],
     );
-    return result.rows.map((row) => ({
-      id: String(row.id),
-      tenantId: String(row.tenant_id),
-      customerId: String(row.customer_id),
-      leadId: String(row.lead_id),
-      channel: String(row.channel),
-      mode: row.mode as ConversationRecord['mode'],
-      createdAt: asIso(row.created_at),
-    }));
+    return result.rows.map(conversationRow);
+  }
+
+  async listFollowUps(tenantId: string): Promise<FollowUpJobRecord[]> {
+    const result = await this.pool.query(
+      `SELECT * FROM follow_up_jobs
+       WHERE tenant_id = $1 ORDER BY COALESCE(retry_at, due_at), created_at`,
+      [tenantId],
+    );
+    return result.rows.map(followUpRow);
+  }
+
+  async getCustomerWorkspace(tenantId: string, customerId: string): Promise<CustomerWorkspaceRecord | null> {
+    const customerResult = await this.pool.query(
+      `SELECT id, tenant_id, display_name, phone, email, created_at
+       FROM customers WHERE tenant_id = $1 AND id = $2`,
+      [tenantId, customerId],
+    );
+    const customerRow = customerResult.rows[0];
+    if (!customerRow) return null;
+    const leadResult = await this.pool.query(
+      `SELECT id, tenant_id, customer_id, conversation_id, service_id, source, workflow_type,
+              sales_state, status, priority, created_at, updated_at
+       FROM leads WHERE tenant_id = $1 AND customer_id = $2
+       ORDER BY created_at DESC LIMIT 1`,
+      [tenantId, customerId],
+    );
+    const lead = leadResult.rows[0] ? leadRow(leadResult.rows[0]) : null;
+    const conversationResult = lead?.conversationId
+      ? await this.pool.query(
+        `SELECT id, tenant_id, customer_id, lead_id, channel, mode, stage,
+                last_customer_message_at, last_business_response_at, created_at, updated_at
+         FROM conversations WHERE tenant_id = $1 AND id = $2`,
+        [tenantId, lead.conversationId],
+      )
+      : { rows: [] as Record<string, unknown>[] };
+    const conversation = conversationResult.rows[0] ? conversationRow(conversationResult.rows[0]) : null;
+    const followUps = await this.pool.query(
+      'SELECT * FROM follow_up_jobs WHERE tenant_id = $1 AND customer_id = $2 ORDER BY created_at DESC',
+      [tenantId, customerId],
+    );
+    const handoff = conversation
+      ? await this.pool.query(
+        `SELECT id, tenant_id, conversation_id, reason, detail, started_at, resolved_at
+         FROM human_handoffs
+         WHERE tenant_id = $1 AND conversation_id = $2 AND resolved_at IS NULL
+         ORDER BY started_at DESC LIMIT 1`,
+        [tenantId, conversation.id],
+      )
+      : { rows: [] as Record<string, unknown>[] };
+    const payments = await this.pool.query(
+      `SELECT id, tenant_id, customer_id, lead_id, conversation_id, reference_type,
+              reference_id, kind, status, amount_cents, original_payment_id, collected_at
+       FROM payments WHERE tenant_id = $1 AND customer_id = $2 ORDER BY collected_at`,
+      [tenantId, customerId],
+    );
+    return {
+      customer: customerRecordRow(customerRow),
+      lead,
+      conversation,
+      followUps: followUps.rows.map(followUpRow),
+      activeHandoff: handoff.rows[0] ? handoffRow(handoff.rows[0]) : null,
+      payments: payments.rows.map(paymentViewRow),
+    };
+  }
+
+  async getOwnerSnapshot(tenantId: string): Promise<OwnerSnapshotRecord> {
+    const [customers, conversations, followUps, revenue, handoffs] = await Promise.all([
+      this.listCustomers(tenantId),
+      this.listConversations(tenantId),
+      this.listFollowUps(tenantId),
+      this.getRevenueSummary(tenantId),
+      this.pool.query(
+        `SELECT id, tenant_id, conversation_id, reason, detail, started_at, resolved_at
+         FROM human_handoffs WHERE tenant_id = $1 AND resolved_at IS NULL ORDER BY started_at`,
+        [tenantId],
+      ),
+    ]);
+    return {
+      customers,
+      conversations,
+      followUps,
+      activeHandoffs: handoffs.rows.map(handoffRow),
+      revenue,
+    };
   }
 
   async getRevenueSummary(tenantId: string): Promise<RevenueSummary> {
@@ -192,6 +278,119 @@ export class PostgresProductionStore implements ProductionStore {
       secretConfigured: Boolean(row.secret_configured),
       webhookEndpointId: String(row.webhook_endpoint_id),
     }));
+  }
+
+  async createInvitation(
+    tenantId: string,
+    actor: AuthenticatedIdentity,
+    input: OrganizationInvitationCreationRecord,
+    now: string,
+  ): Promise<OrganizationInvitationRecord> {
+    return this.transaction(async (client) => {
+      await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [
+        `${tenantId}:${input.idempotencyKey}`,
+      ]);
+      const existing = await client.query(
+        `SELECT * FROM organization_invitations
+         WHERE tenant_id = $1 AND idempotency_key = $2 FOR UPDATE`,
+        [tenantId, input.idempotencyKey],
+      );
+      if (existing.rows[0]) {
+        const record = invitationRow(existing.rows[0]);
+        if (record.email !== input.email || record.role !== input.role) {
+          throw new ApiError(409, 'IDEMPOTENCY_CONFLICT', 'Invitation key was reused with different input');
+        }
+        return { ...record, replayed: true };
+      }
+      const inserted = await client.query(
+        `INSERT INTO organization_invitations
+          (tenant_id, email, role, token_hash, idempotency_key, invited_by_user_id,
+           expires_at, created_at, updated_at)
+         SELECT $1,$2,$3,$4,$5,app_user.id,$6,$7,$7
+         FROM app_users app_user WHERE app_user.auth_subject = $8
+         RETURNING *`,
+        [tenantId, input.email, input.role, input.tokenHash, input.idempotencyKey, input.expiresAt, now, actor.userId],
+      );
+      if (!inserted.rows[0]) throw new ApiError(403, 'ACTOR_NOT_PROVISIONED', 'Authenticated user is not provisioned');
+      const record = invitationRow(inserted.rows[0]);
+      await this.insertAudit(client, tenantId, actor, 'invitation.created', 'organization_invitation', record.id, now);
+      return { ...record, replayed: false };
+    });
+  }
+
+  async acceptInvitation(
+    tokenHash: string,
+    actor: AuthenticatedIdentity,
+    now: string,
+  ): Promise<InvitationAcceptanceResult> {
+    if (!actor.email) throw new ApiError(422, 'INVITATION_EMAIL_REQUIRED', 'The authenticated account has no email');
+    const actorEmail = actor.email;
+    return this.transaction(async (client) => {
+      const invitation = await client.query(
+        'SELECT * FROM organization_invitations WHERE token_hash = $1 FOR UPDATE',
+        [tokenHash],
+      );
+      const row = invitation.rows[0];
+      if (!row) throw new ApiError(404, 'INVITATION_NOT_FOUND', 'Invitation is invalid');
+      if (row.revoked_at) throw new ApiError(410, 'INVITATION_REVOKED', 'Invitation was revoked');
+      if (row.accepted_at) throw new ApiError(409, 'INVITATION_ALREADY_USED', 'Invitation was already accepted');
+      if (new Date(String(row.expires_at)).getTime() <= new Date(now).getTime()) {
+        throw new ApiError(410, 'INVITATION_EXPIRED', 'Invitation expired');
+      }
+      if (String(row.email).toLowerCase() !== actorEmail.toLowerCase()) {
+        throw new ApiError(403, 'INVITATION_EMAIL_MISMATCH', 'Invitation belongs to a different account');
+      }
+      const appUser = await client.query(
+        `INSERT INTO app_users (id, auth_subject, email, created_at, updated_at)
+         VALUES (gen_random_uuid(), $1, $2, $3, $3)
+         ON CONFLICT (auth_subject) DO UPDATE SET email = EXCLUDED.email, updated_at = EXCLUDED.updated_at
+         RETURNING id`,
+        [actor.userId, actorEmail, now],
+      );
+      const appUserId = String(appUser.rows[0]?.id);
+      await client.query(
+        `INSERT INTO organization_memberships (tenant_id, user_id, role, active, created_at, updated_at)
+         VALUES ($1,$2,$3,true,$4,$4)
+         ON CONFLICT (tenant_id, user_id) DO UPDATE
+           SET role = EXCLUDED.role, active = true, updated_at = EXCLUDED.updated_at`,
+        [row.tenant_id, appUserId, row.role, now],
+      );
+      await client.query(
+        `UPDATE organization_invitations
+         SET accepted_by_user_id = $2, accepted_at = $3, updated_at = $3 WHERE id = $1`,
+        [row.id, appUserId, now],
+      );
+      const tenantId = String(row.tenant_id);
+      await this.insertAudit(client, tenantId, actor, 'invitation.accepted', 'organization_invitation', String(row.id), now);
+      return { tenantId, role: row.role as InvitationAcceptanceResult['role'], replayed: false };
+    });
+  }
+
+  async revokeInvitation(
+    tenantId: string,
+    invitationId: string,
+    actor: AuthenticatedIdentity,
+    now: string,
+  ): Promise<OrganizationInvitationRecord | null> {
+    return this.transaction(async (client) => {
+      const locked = await client.query(
+        'SELECT * FROM organization_invitations WHERE tenant_id = $1 AND id = $2 FOR UPDATE',
+        [tenantId, invitationId],
+      );
+      const row = locked.rows[0];
+      if (!row) return null;
+      if (row.accepted_at) throw new ApiError(409, 'INVITATION_ALREADY_USED', 'Accepted invitation cannot be revoked');
+      if (!row.revoked_at) {
+        const updated = await client.query(
+          `UPDATE organization_invitations SET revoked_at = $3, updated_at = $3
+           WHERE tenant_id = $1 AND id = $2 RETURNING *`,
+          [tenantId, invitationId, now],
+        );
+        await this.insertAudit(client, tenantId, actor, 'invitation.revoked', 'organization_invitation', invitationId, now);
+        return invitationRow(updated.rows[0]);
+      }
+      return invitationRow(row);
+    });
   }
 
   async startHumanTakeover(
@@ -894,6 +1093,94 @@ function followUpRow(row: Record<string, unknown>): FollowUpJobRecord {
     idempotencyKey: String(row.idempotency_key),
     draftMessage: nullableString(row.draft_message),
     createdAt: asIso(row.created_at),
+  };
+}
+
+function customerRecordRow(row: Record<string, unknown>): CustomerRecord {
+  return {
+    id: String(row.id),
+    tenantId: String(row.tenant_id),
+    displayName: String(row.display_name),
+    phone: String(row.phone),
+    email: nullableString(row.email),
+    createdAt: asIso(row.created_at),
+  };
+}
+
+function conversationRow(row: Record<string, unknown>): ConversationRecord {
+  return {
+    id: String(row.id),
+    tenantId: String(row.tenant_id),
+    customerId: String(row.customer_id),
+    leadId: String(row.lead_id),
+    channel: String(row.channel),
+    mode: row.mode as ConversationRecord['mode'],
+    stage: String(row.stage),
+    lastCustomerMessageAt: nullableIso(row.last_customer_message_at),
+    lastBusinessResponseAt: nullableIso(row.last_business_response_at),
+    createdAt: asIso(row.created_at),
+    updatedAt: asIso(row.updated_at),
+  };
+}
+
+function leadRow(row: Record<string, unknown>): LeadRecordView {
+  return {
+    id: String(row.id),
+    tenantId: String(row.tenant_id),
+    customerId: String(row.customer_id),
+    conversationId: String(row.conversation_id),
+    serviceId: nullableString(row.service_id),
+    source: String(row.source),
+    workflowType: row.workflow_type as LeadRecordView['workflowType'],
+    salesState: String(row.sales_state),
+    status: row.status as LeadRecordView['status'],
+    priority: String(row.priority),
+    createdAt: asIso(row.created_at),
+    updatedAt: asIso(row.updated_at),
+  };
+}
+
+function handoffRow(row: Record<string, unknown>): HumanHandoffRecord {
+  return {
+    id: String(row.id),
+    tenantId: String(row.tenant_id),
+    conversationId: String(row.conversation_id),
+    reason: String(row.reason),
+    detail: String(row.detail),
+    startedAt: asIso(row.started_at),
+    resolvedAt: nullableIso(row.resolved_at),
+  };
+}
+
+function paymentViewRow(row: Record<string, unknown>): PaymentRecordView {
+  return {
+    id: String(row.id),
+    tenantId: String(row.tenant_id),
+    customerId: String(row.customer_id),
+    leadId: String(row.lead_id),
+    conversationId: String(row.conversation_id),
+    referenceType: row.reference_type as PaymentRecordView['referenceType'],
+    referenceId: String(row.reference_id),
+    kind: row.kind as PaymentRecordView['kind'],
+    status: row.status as PaymentRecordView['status'],
+    amountCents: Number(row.amount_cents),
+    originalPaymentId: nullableString(row.original_payment_id),
+    collectedAt: asIso(row.collected_at),
+  };
+}
+
+function invitationRow(row: Record<string, unknown> | undefined): OrganizationInvitationRecord {
+  if (!row) throw new Error('Invitation query did not return a row');
+  return {
+    id: String(row.id),
+    tenantId: String(row.tenant_id),
+    email: String(row.email),
+    role: row.role as OrganizationInvitationRecord['role'],
+    expiresAt: asIso(row.expires_at),
+    acceptedAt: nullableIso(row.accepted_at),
+    revokedAt: nullableIso(row.revoked_at),
+    createdAt: asIso(row.created_at),
+    replayed: false,
   };
 }
 

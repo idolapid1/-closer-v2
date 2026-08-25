@@ -1,4 +1,12 @@
-export class FixedWindowRateLimiter {
+export interface RateLimiter {
+  allow(key: string, nowMs?: number): boolean | Promise<boolean>;
+}
+
+export interface DistributedRateLimitStore {
+  increment(key: string, windowMs: number, limit: number, nowMs: number): Promise<boolean>;
+}
+
+export class InMemoryRateLimiter implements RateLimiter {
   private readonly buckets = new Map<string, { count: number; resetAt: number }>();
 
   constructor(
@@ -24,3 +32,18 @@ export class FixedWindowRateLimiter {
     return true;
   }
 }
+
+export class DistributedRateLimiter implements RateLimiter {
+  constructor(
+    private readonly store: DistributedRateLimitStore,
+    private readonly limit: number,
+    private readonly windowMs = 60_000,
+  ) {}
+
+  allow(key: string, nowMs = Date.now()): Promise<boolean> {
+    return this.store.increment(key, this.windowMs, this.limit, nowMs);
+  }
+}
+
+/** @deprecated Use InMemoryRateLimiter. Kept for compatibility with the V1 boundary. */
+export class FixedWindowRateLimiter extends InMemoryRateLimiter {}

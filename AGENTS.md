@@ -41,6 +41,14 @@
 
 Prefer focused application services over expanding `CloserService` or creating generic frameworks. Avoid KPI walls, generic CRM abstractions, workflow builders, premature production integrations, and terminology a service-business owner should not need.
 
+## Production activation boundary
+
+- Supabase owns managed PostgreSQL and identity sessions; Fastify remains the only trusted application/data boundary.
+- Never read CLOSER production tables from the browser or trust a browser-selected tenant without server membership authorization.
+- A production configuration/request failure must show a safe error and must never fall back to deterministic demo records.
+- Keep migrations additive and checksummed. Run `db:migrate` twice plus `db:verify` against staging, and use only a dedicated `TEST_DATABASE_URL` for `test:postgres`.
+- The API and follow-up worker are separate processes. Connector delivery remains mock-only until separately authorized.
+
 ## Production trust boundary
 
 - Keep demo/browser persistence and authenticated production data modes explicit; never silently mix them.

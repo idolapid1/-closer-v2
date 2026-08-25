@@ -2,7 +2,7 @@
 
 ## Decision
 
-CLOSER uses a small Node.js 22/24 server, Fastify, and PostgreSQL 16. Authentication is verified server-side with signed OIDC JWTs through a remote JWKS endpoint. This is compatible with Supabase Auth, but the boundary is provider-neutral: Supabase is not imported into React and the server does not trust browser-supplied tenant identity.
+CLOSER uses a small Node.js 22/24 server, Fastify, and PostgreSQL 16. Supabase is the first managed platform: its browser client owns sign-in/session refresh, its Auth service issues identity JWTs, and its PostgreSQL service stores production records. Fastify still verifies signed JWTs through the project's JWKS endpoint and never trusts browser-supplied tenant identity. React does not use the Supabase Data API or database client.
 
 The existing TypeScript domain remains the behavioral reference. The production layer adds durable storage, authenticated application APIs, background-job leasing, webhook verification, server-only secrets, and audit records. It does not replace the appointment, quote/job, consent, NextAction, Human Takeover, or financial rules.
 
@@ -11,13 +11,14 @@ The existing TypeScript domain remains the behavioral reference. The production 
 - Node.js 22 or 24 runs `server/index.ts`; Fastify provides a thin HTTP boundary.
 - Zod validates every path and mutation body before application execution.
 - Errors have stable codes and safe messages; stack traces, SQL, request bodies, and customer content are not returned or logged.
-- A fixed-window limiter defines the early rate-limit boundary. A distributed limiter is required before horizontal production scale.
-- `ProductionApiClient` is the browser-facing typed client. It supplies a short-lived access token and never accesses PostgreSQL.
-- `DEMO` remains the safe default. `PRODUCTION` is explicit and requires an authenticated API session; it never silently falls back to demo data.
+- `RateLimiter` has explicit in-memory and distributed implementations. The deployment currently wires the in-memory limiter, so horizontal scale still requires a real distributed store.
+- `ProductionApiClient` is the browser-facing typed client. It supplies and refreshes a short-lived access token and never accesses PostgreSQL.
+- `DEMO` and `PRODUCTION` are explicit build/runtime paths. A production configuration or request failure shows a safe error and never silently falls back to demo data.
+- `/health` proves process liveness. `/ready` separately proves database reachability and schema compatibility.
 
 ## Database
 
-PostgreSQL 16 is the durable source in production. `server/migrations/0001_production_foundation.sql` is transactional, checksummed, and source-controlled. It represents:
+PostgreSQL 16 is the durable source in production. The migration runner is transactional, checksummed, ordered, and source-controlled. `0001_production_foundation.sql` remains the commercial foundation; `0002_production_activation.sql` adds organization invitations. Together they represent:
 
 - tenants, users, memberships, roles, services, and service knowledge;
 - customers, leads, objections, conversations, messages, and structured memory;
@@ -40,7 +41,11 @@ The browser may place a tenant ID in a route, but it is only a requested resourc
 - `admin`: member access plus follow-up, booking, payment, revenue, and connector-configuration operations;
 - `owner`: admin access plus high-impact Owner Copilot mutations.
 
-New authenticated accounts can create a tenant through an idempotent provisioning operation. It creates/synchronizes the user record, tenant, and owner membership in one transaction.
+New authenticated accounts can create a tenant through an idempotent provisioning operation. It creates/synchronizes the user record, tenant, and owner membership in one transaction. The browser may remember a selected tenant, but the API resolves active membership on every tenant request.
+
+The frontend `AuthClient` abstraction contains provider-specific session behavior. `SupabaseAuthClient` handles sign-in, sign-up, restore, refresh, expiration, and sign-out. Server authorization remains independent of that UI state.
+
+Organization invitation tokens are random, hashed before persistence, email-bound, expiring, revocable, and single-use. Owner/admin roles may invite; member may not. Development can expose a one-time URL. Production fails closed until a durable invitation-delivery provider exists.
 
 ## Idempotency
 
@@ -54,7 +59,7 @@ The existing follow-up domain decides whether and when a follow-up is valid. The
 
 Workers claim one due job with a transaction and `FOR UPDATE SKIP LOCKED`. Completion/failure requires the same lease owner and a unique attempt key. The supplied dispatcher is deterministic and mock-only. No production customer message can be sent in this milestone.
 
-A deployment may invoke the worker through a managed scheduler, process service, or queue consumer. The scheduling platform must not replace the database lease.
+`server/worker.ts` is the explicit long-running process with graceful shutdown and a configurable poll/lease interval. A deployment may run it as a worker service or managed process. The scheduling platform must not replace the database lease.
 
 ## Webhooks
 
@@ -76,23 +81,24 @@ The existing Owner Copilot tool names remain the contract. The server verifies a
 
 The server ledger distinguishes `potential`, `pipeline`, `booked`, `collected`, `refunded`, and `recovered`. Potential/quote value is not cash. Collected/recovered/refunded entries require a tenant-matched validated payment. Refunds link to an original collection, cannot exceed it, and reduce net collected totals. AI/customer claims cannot create ledger truth.
 
-## Local development
+## Local development and activation
 
 1. Use Node 22 or 24 and `npm install`.
-2. Copy `.env.example` to ignored `.env` and provide a real local/test JWKS issuer.
+2. Copy `.env.local.example` to ignored `.env`, or inject the same values through the process environment, and provide a Supabase project/JWKS issuer.
 3. Start PostgreSQL with `docker compose -f docker-compose.production-local.yml up -d`.
-4. Run `npm run db:migrate`.
-5. Run `npm run dev:server`; run `npm run dev` separately for the demo UI.
+4. Run `npm run db:migrate` twice, then `npm run db:verify`.
+5. Run `npm run dev:server`, `npm run dev:worker`, and `npm run dev` separately.
 
-The machine used for this milestone did not have Docker or `psql`. The migration was source-, type-, and contract-tested but not applied to a live PostgreSQL process here. That runtime application remains a deployment-environment gate, not hidden coverage.
+See [Production setup](PRODUCTION_SETUP.md) for the complete Supabase, environment, migration, browser, API, worker, and integration-test procedure.
 
 ## Remaining deployment blockers
 
 - provision managed PostgreSQL/Supabase and apply the migration;
-- configure OIDC/Supabase Auth sessions, invitations, issuer, JWKS, audience, and account policy;
+- supply a real Supabase project and exercise the implemented Auth session flow;
+- apply and verify both migrations on managed PostgreSQL;
 - use managed secrets and limited database roles;
 - replace the in-process limiter before multi-instance scale;
 - deploy a worker/scheduler with observability and alerts;
 - implement and certify each real provider signature/connector adapter;
-- finish production UI session wiring and API coverage before enabling production data mode;
+- add a durable invitation email/outbox provider before production team invitations;
 - add backups, restore drills, retention/deletion policy, and privacy/legal review.

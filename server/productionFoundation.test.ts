@@ -631,8 +631,8 @@ function harness(overrides: { followUps?: FollowUpJobRecord[] } = {}) {
       { id: 'customer-b', tenantId: 'tenant-b', displayName: 'Dana B', phone: '+972500000002', email: null, createdAt: NOW },
     ],
     conversations: [
-      { id: 'conversation-a', tenantId: 'tenant-a', customerId: 'customer-a', leadId: 'lead-a', channel: 'WHATSAPP', mode: 'AI_ACTIVE', createdAt: NOW },
-      { id: 'conversation-b', tenantId: 'tenant-b', customerId: 'customer-b', leadId: 'lead-b', channel: 'WHATSAPP', mode: 'AI_ACTIVE', createdAt: NOW },
+      { id: 'conversation-a', tenantId: 'tenant-a', customerId: 'customer-a', leadId: 'lead-a', channel: 'WHATSAPP', mode: 'AI_ACTIVE', stage: 'NEW_INQUIRY', lastCustomerMessageAt: null, lastBusinessResponseAt: null, createdAt: NOW, updatedAt: NOW },
+      { id: 'conversation-b', tenantId: 'tenant-b', customerId: 'customer-b', leadId: 'lead-b', channel: 'WHATSAPP', mode: 'AI_ACTIVE', stage: 'NEW_INQUIRY', lastCustomerMessageAt: null, lastBusinessResponseAt: null, createdAt: NOW, updatedAt: NOW },
     ],
     leads: [
       { id: 'lead-a', tenantId: 'tenant-a', customerId: 'customer-a', conversationId: 'conversation-a', source: 'WHATSAPP', workflowType: 'APPOINTMENT_SERVICE', serviceId: null, status: 'LOST', marketingAllowed: true },

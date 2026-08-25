@@ -14,13 +14,13 @@ The project is a strict TypeScript React/Vite application with these layers:
 - `infrastructure/` — localStorage/in-memory adapters, validation, and v1–v4→v5 migration
 - `server/api` — authenticated Fastify routes, validation, safe errors, and role checks
 - `server/auth` — OIDC/JWKS JWT verification
-- `server/application` — server authorization, idempotency, and durable repository contracts
+- `server/application` — server authorization, idempotency, hashed invitations, and durable repository contracts
 - `server/infrastructure` — PostgreSQL and deterministic in-memory server adapters
-- `server/jobs` and `server/webhooks` — leased mock follow-up execution and signed ingestion
+- `server/jobs`, `server/worker.ts`, and `server/webhooks` — leased mock follow-up execution, explicit worker lifecycle, and signed ingestion
 - `server/migrations` — PostgreSQL schema, tenant constraints, audits, and RLS
 - `integrations/` — provider/connector ports, deterministic mocks, and disabled production adapters
 - `data/` — deterministic fictional multi-vertical seed
-- `state/` — React subscription adapter
+- `state/` — separate demo subscription and authenticated production-owner/session adapters
 - `components/product/` — owner shell, scoped visual tokens, and shared presentation primitives
 - `features/actions`, `features/customers`, `features/customer`, `features/inbox`, `features/work`, `features/money`, and `features/more` — normal owner experiences
 - remaining `features/` and `components/` — preserved engineering/demo UI
@@ -42,6 +42,8 @@ The revenue summary uses validated payment and commercial state only. It reports
 `Lead` also carries normalized source, external source reference, priority, and typed objections. `FollowUpService` persists cadence step, channel, attempts, result, stop reason, owner, and draft. `ReactivationService` only returns old lost opportunities that satisfy the tenant inactivity window and marketing consent. `CloserService` performs explicit reopen/schedule mutations. Owner Copilot tools run through an active tenant owner identity; mutation tools require an explicit approval bit and all executions receive idempotent audit activities.
 
 Routing uses two explicit shells. `ProductLayout` owns the RTL owner routes `/actions`, `/customers`, `/customer/:id`, `/inbox`, `/work`, `/money`, and `/more`; the Phase 3 `Layout` remains around `/demo`, `/appointments`, `/quotes`, and `/debug`. This prevents engineering inspection needs from leaking into the owner visual language.
+
+`OwnerShell` is the shared visual/navigation component. Demo `ProductLayout` supplies deterministic business projections. The separately code-split production application supplies only memberships and read models returned by `ProductionApiClient`. This shares presentation without sharing persistence or creating a demo fallback.
 
 The Today route is code-split with `React.lazy`. Its GSAP/OGL identity dependencies and WebGL component are not part of the initial chunk for routine Customers, Work, Money, More, or Conversation navigation. `ProductLayout.css` is loaded after the legacy engineering stylesheet and scoped by `.owner-shell`, so production routes cannot fall back to light legacy surfaces while engineering routes remain unchanged.
 
@@ -72,4 +74,4 @@ Level 3 tools remain proposals: real appointment, quote, deposit, payment, and j
 
 Every collection is tenant scoped. Schema v5 preserves earlier workflow/activity migrations and adds sales-source context, vertical follow-up/reactivation settings, auditable revenue context, and unattributed defaults. Valid v1–v4 data is enriched and preserved; malformed data returns to the deterministic seed. Repository mismatched writes throw, and cross-tenant reads return nothing.
 
-Demo mode continues to use this versioned browser schema. Production mode uses browser → authenticated API → authorization/application service → PostgreSQL repository. A tenant route parameter is never authorization: membership is resolved from the verified identity, each SQL query is tenant-filtered, tenant-linked foreign keys reject cross-customer references, and RLS/unique constraints add defense in depth. See [Production architecture](PRODUCTION_ARCHITECTURE.md).
+Demo mode continues to use this versioned browser schema. Production mode uses Supabase session → `ProductionApiClient` → authenticated API → authorization/application service → PostgreSQL repository. A tenant route parameter is never authorization: membership is resolved from the verified identity, each SQL query is tenant-filtered, tenant-linked foreign keys reject cross-customer references, and RLS/unique constraints add defense in depth. Production session storage contains only an active-tenant preference, never customer data. See [Production architecture](PRODUCTION_ARCHITECTURE.md) and [Production setup](PRODUCTION_SETUP.md).
