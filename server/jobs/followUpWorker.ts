@@ -43,29 +43,34 @@ export class FollowUpWorker {
 
   async runOnce(): Promise<'idle' | 'completed' | 'failed'> {
     const startedAt = this.now();
-    const job = await this.store.claimDueFollowUp(
-      this.workerId,
-      startedAt.toISOString(),
-      new Date(startedAt.getTime() + this.leaseMilliseconds).toISOString(),
-    );
+    const job = await this.store.runAsSystem('follow-up-worker', (store) => (
+      store.claimDueFollowUp(
+        this.workerId,
+        startedAt.toISOString(),
+        new Date(startedAt.getTime() + this.leaseMilliseconds).toISOString(),
+      )
+    ));
     if (!job) return 'idle';
     const attemptKey = `${job.id}:attempt:${job.attemptCount + 1}`;
     try {
       await this.dispatcher.send(job, attemptKey);
-      await this.store.completeFollowUp(job.id, this.workerId, attemptKey, this.now().toISOString());
+      await this.store.runAsSystem('follow-up-worker', (store) => (
+        store.completeFollowUp(job.id, this.workerId, attemptKey, this.now().toISOString())
+      ));
       return 'completed';
     } catch {
       const retryAt = new Date(this.now().getTime() + 60_000).toISOString();
-      await this.store.failFollowUp(
-        job.id,
-        this.workerId,
-        attemptKey,
-        'MOCK_DISPATCH_FAILED',
-        retryAt,
-        this.now().toISOString(),
-      );
+      await this.store.runAsSystem('follow-up-worker', (store) => (
+        store.failFollowUp(
+          job.id,
+          this.workerId,
+          attemptKey,
+          'MOCK_DISPATCH_FAILED',
+          retryAt,
+          this.now().toISOString(),
+        )
+      ));
       return 'failed';
     }
   }
 }
-

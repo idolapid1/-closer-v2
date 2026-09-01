@@ -12,6 +12,7 @@ import { ProductionApiError } from '../infrastructure/api/ProductionApiClient';
 import type { ProductionApiClient } from '../infrastructure/api/ProductionApiClient';
 import type {
   ProductionJourneyCreationContract,
+  ProductionJourneyResultContract,
   ProductionOwnerSnapshotContract,
   ProductionTenantContract,
 } from '../types/productionApi';
@@ -34,7 +35,7 @@ export interface ProductionOwnerContextValue {
   refresh(): Promise<void>;
   refreshTenants(preferredTenantId?: string): Promise<ProductionTenantContract[]>;
   provisionTenant(name: string): Promise<void>;
-  createJourney(input: ProductionJourneyCreationContract): Promise<{ customerId: string; leadId: string; conversationId: string }>;
+  createJourney(input: ProductionJourneyCreationContract): Promise<ProductionJourneyResultContract>;
 }
 
 const ProductionOwnerContext = createContext<ProductionOwnerContextValue | null>(null);

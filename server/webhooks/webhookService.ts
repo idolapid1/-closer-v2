@@ -22,31 +22,32 @@ export class WebhookService {
     headers: Record<string, string | string[] | undefined>;
     rawBody: Buffer;
   }): Promise<{ eventId: string; replayed: boolean; processingState: string }> {
-    const adapter = assertFound(this.adapters.get(input.provider) ?? null, 'UNKNOWN_WEBHOOK_PROVIDER');
-    const endpoint = assertFound(
-      await this.store.findWebhookEndpoint(input.provider, input.endpointId),
-      'UNKNOWN_WEBHOOK_ENDPOINT',
-    );
-    if (!endpoint.enabled) throw new ApiError(404, 'UNKNOWN_WEBHOOK_ENDPOINT', 'Webhook endpoint not found');
-    const secret = await this.secrets.get(endpoint.signingSecretReference);
-    if (!secret || !adapter.verify(input.rawBody, input.headers, secret)) {
-      throw new ApiError(401, 'INVALID_WEBHOOK_SIGNATURE', 'Webhook verification failed');
-    }
-    let envelope;
-    try {
-      envelope = adapter.extractEnvelope(input.rawBody);
-    } catch {
-      throw new ApiError(400, 'INVALID_WEBHOOK_PAYLOAD', 'Webhook payload is invalid');
-    }
-    const payloadHash = createHash('sha256').update(input.rawBody).digest('hex');
-    const event = await this.store.recordWebhookEvent(
-      endpoint,
-      envelope.providerEventId,
-      payloadHash,
-      this.now().toISOString(),
-    );
-    if (!event.replayed) await this.store.markWebhookProcessed(event.id, this.now().toISOString());
-    return { eventId: event.id, replayed: event.replayed, processingState: 'processed' };
+    return this.store.runAsSystem('webhook-ingestion', async (store) => {
+      const adapter = assertFound(this.adapters.get(input.provider) ?? null, 'UNKNOWN_WEBHOOK_PROVIDER');
+      const endpoint = assertFound(
+        await store.findWebhookEndpoint(input.provider, input.endpointId),
+        'UNKNOWN_WEBHOOK_ENDPOINT',
+      );
+      if (!endpoint.enabled) throw new ApiError(404, 'UNKNOWN_WEBHOOK_ENDPOINT', 'Webhook endpoint not found');
+      const secret = await this.secrets.get(endpoint.signingSecretReference);
+      if (!secret || !adapter.verify(input.rawBody, input.headers, secret)) {
+        throw new ApiError(401, 'INVALID_WEBHOOK_SIGNATURE', 'Webhook verification failed');
+      }
+      let envelope;
+      try {
+        envelope = adapter.extractEnvelope(input.rawBody);
+      } catch {
+        throw new ApiError(400, 'INVALID_WEBHOOK_PAYLOAD', 'Webhook payload is invalid');
+      }
+      const payloadHash = createHash('sha256').update(input.rawBody).digest('hex');
+      const event = await store.recordWebhookEvent(
+        endpoint,
+        envelope.providerEventId,
+        payloadHash,
+        this.now().toISOString(),
+      );
+      if (!event.replayed) await store.markWebhookProcessed(event.id, this.now().toISOString());
+      return { eventId: event.id, replayed: event.replayed, processingState: 'processed' };
+    });
   }
 }
-

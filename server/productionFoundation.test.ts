@@ -301,6 +301,18 @@ describe('server idempotency and complete authenticated revenue chain', () => {
       depositRequiredCents: 20_000,
     });
     expect(booking.statusCode).toBe(200);
+    const bookedOpportunity = await app.inject({
+      method: 'GET',
+      url: `/api/v1/tenants/tenant-a/opportunities/${ids.opportunityId}`,
+      headers: authorization('member-a'),
+    });
+    expect(bookedOpportunity.json().opportunity).toMatchObject({
+      bookingId: booking.json().bookingId,
+      status: 'BOOKED',
+      recoveryState: 'RECOVERED',
+      attributionType: 'ORGANIC',
+      revenueAttributedCents: 0,
+    });
 
     const paymentPayload = {
       idempotencyKey: 'payment-full-chain-001',
@@ -336,6 +348,16 @@ describe('server idempotency and complete authenticated revenue chain', () => {
       headers: authorization('owner-a'),
     });
     expect(summary.json().revenue.collectedCents).toBe(80_000);
+    const commandCenter = await app.inject({
+      method: 'GET',
+      url: '/api/v1/tenants/tenant-a/revenue-command-center',
+      headers: authorization('owner-a'),
+    });
+    expect(commandCenter.json().commandCenter).toMatchObject({
+      actualRecoveredRevenueCents: 0,
+      influencedRevenueCents: 0,
+      recoveredBookings: 0,
+    });
   });
 
   it('nets a validated refund from collected attribution without double counting', async () => {
@@ -380,6 +402,17 @@ describe('server idempotency and complete authenticated revenue chain', () => {
       headers: authorization('owner-a'),
     });
     expect(summary.json().revenue).toMatchObject({ collectedCents: 60_000, refundedCents: 20_000 });
+    const opportunity = await app.inject({
+      method: 'GET',
+      url: `/api/v1/tenants/tenant-a/opportunities/${context.opportunityId}`,
+      headers: authorization('owner-a'),
+    });
+    expect(opportunity.json().opportunity.revenueAttributedCents).toBe(60_000);
+    expect(opportunity.json().revenueEvents.map((event: { eventType: string }) => event.eventType)).toEqual([
+      'BOOKING_CREATED',
+      'PAYMENT_RECEIVED',
+      'REFUND',
+    ]);
   });
 
   it('rejects a payment linked to a different tenant journey context', async () => {
@@ -458,7 +491,497 @@ describe('server idempotency and complete authenticated revenue chain', () => {
   });
 });
 
+describe('HVAC opportunity and revenue recovery API', () => {
+  it('creates multiple isolated opportunities for one customer without duplicating the customer', async () => {
+    const { app } = harness();
+    const journey = await post(app, '/api/v1/tenants/tenant-a/journeys', 'member-a', {
+      ...journeyPayload('hvac-journey-001'),
+      lead: {
+        source: 'MISSED_CALL',
+        workflowType: 'APPOINTMENT_SERVICE',
+        serviceId: null,
+        opportunityType: 'EMERGENCY_REPAIR',
+        estimatedValueCents: 94_000,
+        autonomyLevel: 'SUGGEST',
+      },
+    });
+    expect(journey.statusCode).toBe(200);
+    const ids = journey.json();
+    expect(ids.opportunityId).toBeTypeOf('string');
+
+    const secondPayload = {
+      idempotencyKey: 'hvac-opportunity-002',
+      source: 'PHONE',
+      workflowType: 'QUOTE_JOB',
+      serviceId: null,
+      opportunityType: 'SYSTEM_REPLACEMENT',
+      estimatedValueCents: 940_000,
+      autonomyLevel: 'APPROVE_TO_SEND',
+      channel: 'MANUAL',
+    };
+    const second = await post(
+      app,
+      `/api/v1/tenants/tenant-a/customers/${ids.customerId}/opportunities`,
+      'member-a',
+      secondPayload,
+    );
+    const replay = await post(
+      app,
+      `/api/v1/tenants/tenant-a/customers/${ids.customerId}/opportunities`,
+      'member-a',
+      secondPayload,
+    );
+    expect(second.statusCode).toBe(200);
+    expect(replay.json()).toEqual({ ...second.json(), replayed: true });
+
+    const workspace = await app.inject({
+      method: 'GET',
+      url: `/api/v1/tenants/tenant-a/customers/${ids.customerId}`,
+      headers: authorization('member-a'),
+    });
+    expect(workspace.json().workspace.opportunities).toHaveLength(2);
+    expect(new Set(workspace.json().workspace.opportunities.map((item: { customerId: string }) => item.customerId))).toEqual(new Set([ids.customerId]));
+  });
+
+  it('scores recovery idempotently and surfaces real revenue at risk', async () => {
+    const { app } = harness();
+    const journey = await post(app, '/api/v1/tenants/tenant-a/journeys', 'member-a', {
+      ...journeyPayload('recovery-score-001'),
+      lead: {
+        source: 'MISSED_CALL',
+        workflowType: 'APPOINTMENT_SERVICE',
+        serviceId: null,
+        opportunityType: 'EMERGENCY_REPAIR',
+        estimatedValueCents: 940_000,
+        autonomyLevel: 'SUGGEST',
+      },
+    });
+    const opportunityId = journey.json().opportunityId as string;
+    const denied = await post(
+      app,
+      `/api/v1/tenants/tenant-a/opportunities/${opportunityId}/evaluate-recovery`,
+      'member-a',
+      { idempotencyKey: 'recovery-evaluation-001' },
+    );
+    expect(denied.statusCode).toBe(403);
+    const first = await post(
+      app,
+      `/api/v1/tenants/tenant-a/opportunities/${opportunityId}/evaluate-recovery`,
+      'admin-a',
+      { idempotencyKey: 'recovery-evaluation-001' },
+    );
+    const replay = await post(
+      app,
+      `/api/v1/tenants/tenant-a/opportunities/${opportunityId}/evaluate-recovery`,
+      'admin-a',
+      { idempotencyKey: 'recovery-evaluation-001' },
+    );
+    expect(first.json().decision).toMatchObject({
+      playType: 'MISSED_CALL_RECOVERY',
+      eligible: true,
+      executionState: 'SUGGESTED',
+    });
+    expect(first.json().action).toMatchObject({
+      status: 'PENDING',
+      requiresApproval: true,
+      deliveryState: 'LIVE_DISABLED',
+    });
+    expect(replay.json()).toEqual({ ...first.json(), replayed: true });
+
+    const commandCenter = await app.inject({
+      method: 'GET',
+      url: '/api/v1/tenants/tenant-a/revenue-command-center',
+      headers: authorization('member-a'),
+    });
+    expect(commandCenter.json().commandCenter).toMatchObject({
+      revenueAtRiskCents: 940_000,
+      activeOpportunities: 1,
+    });
+    expect(commandCenter.json().commandCenter.opportunitiesAtRisk[0].id).toBe(opportunityId);
+  });
+
+  it('keeps one recovery action through approval and attributes a later booking conservatively', async () => {
+    const { app } = harness();
+    const journey = await post(app, '/api/v1/tenants/tenant-a/journeys', 'member-a', {
+      ...journeyPayload('recovery-commercial-truth-001'),
+      lead: {
+        source: 'MISSED_CALL',
+        workflowType: 'APPOINTMENT_SERVICE',
+        serviceId: null,
+        opportunityType: 'STANDARD_REPAIR',
+        estimatedValueCents: 250_000,
+        autonomyLevel: 'APPROVE_TO_SEND',
+      },
+    });
+    const ids = journey.json();
+    const firstEvaluation = await post(
+      app,
+      `/api/v1/tenants/tenant-a/opportunities/${ids.opportunityId}/evaluate-recovery`,
+      'admin-a',
+      { idempotencyKey: 'recovery-commercial-evaluate-001' },
+    );
+    const actionId = firstEvaluation.json().action.id as string;
+    expect(firstEvaluation.json()).toMatchObject({
+      decision: { eligible: true, executionState: 'PENDING_APPROVAL' },
+      action: { id: actionId, status: 'WAITING_APPROVAL', deliveryState: 'LIVE_DISABLED' },
+    });
+
+    const beforeApproval = await app.inject({
+      method: 'GET',
+      url: '/api/v1/tenants/tenant-a/revenue-command-center',
+      headers: authorization('member-a'),
+    });
+    expect(beforeApproval.json().commandCenter).toMatchObject({
+      revenueAtRiskCents: 250_000,
+      potentialRecoveredRevenueCents: 0,
+      actualRecoveredRevenueCents: 0,
+    });
+
+    const [approvalOne, approvalTwo] = await Promise.all([
+      post(
+        app,
+        `/api/v1/tenants/tenant-a/opportunities/${ids.opportunityId}/recovery-actions/${actionId}/approve`,
+        'owner-a',
+        { idempotencyKey: 'recovery-commercial-approve-001' },
+      ),
+      post(
+        app,
+        `/api/v1/tenants/tenant-a/opportunities/${ids.opportunityId}/recovery-actions/${actionId}/approve`,
+        'owner-a',
+        { idempotencyKey: 'recovery-commercial-approve-002' },
+      ),
+    ]);
+    expect(approvalOne.statusCode).toBe(200);
+    expect(approvalTwo.statusCode).toBe(200);
+    expect(approvalOne.json().action).toMatchObject({ id: actionId, status: 'READY' });
+    expect(approvalTwo.json().action).toMatchObject({ id: actionId, status: 'READY' });
+
+    const reevaluation = await post(
+      app,
+      `/api/v1/tenants/tenant-a/opportunities/${ids.opportunityId}/evaluate-recovery`,
+      'admin-a',
+      { idempotencyKey: 'recovery-commercial-evaluate-002' },
+    );
+    expect(reevaluation.json().action).toMatchObject({ id: actionId, status: 'READY' });
+    const activeDetail = await app.inject({
+      method: 'GET',
+      url: `/api/v1/tenants/tenant-a/opportunities/${ids.opportunityId}`,
+      headers: authorization('member-a'),
+    });
+    expect(activeDetail.json().opportunity.recoveryState).toBe('RECOVERY_ACTIVE');
+    expect(activeDetail.json().recoveryActions).toHaveLength(1);
+    expect(activeDetail.json().recoveryDecisions).toHaveLength(1);
+
+    const activeCommandCenter = await app.inject({
+      method: 'GET',
+      url: '/api/v1/tenants/tenant-a/revenue-command-center',
+      headers: authorization('member-a'),
+    });
+    expect(activeCommandCenter.json().commandCenter).toMatchObject({
+      potentialRecoveredRevenueCents: 250_000,
+      actualRecoveredRevenueCents: 0,
+      recoveredBookings: 0,
+    });
+
+    const booking = await post(app, '/api/v1/tenants/tenant-a/bookings', 'admin-a', {
+      idempotencyKey: 'recovery-commercial-booking-001',
+      customerId: ids.customerId,
+      leadId: ids.leadId,
+      serviceId: 'service-clinic',
+      staffId: 'staff-clinic',
+      startAt: '2026-08-27T09:00:00.000Z',
+      endAt: '2026-08-27T10:00:00.000Z',
+      totalCents: 250_000,
+      depositRequiredCents: 50_000,
+    });
+    expect(booking.statusCode).toBe(200);
+    const bookedDetail = await app.inject({
+      method: 'GET',
+      url: `/api/v1/tenants/tenant-a/opportunities/${ids.opportunityId}`,
+      headers: authorization('member-a'),
+    });
+    expect(bookedDetail.json().opportunity).toMatchObject({
+      status: 'BOOKED',
+      recoveryState: 'RECOVERED',
+      attributionType: 'ASSISTED',
+      revenueAttributedCents: 0,
+    });
+    expect(bookedDetail.json().revenueEvents[0]).toMatchObject({
+      stage: 'booked',
+      eventType: 'BOOKING_CREATED',
+      amountCents: 250_000,
+      attributionType: 'ASSISTED',
+    });
+
+    const afterBooking = await app.inject({
+      method: 'GET',
+      url: '/api/v1/tenants/tenant-a/revenue-command-center',
+      headers: authorization('member-a'),
+    });
+    expect(afterBooking.json().commandCenter).toMatchObject({
+      potentialRecoveredRevenueCents: 0,
+      actualRecoveredRevenueCents: 0,
+      influencedRevenueCents: 0,
+      recoveredBookings: 0,
+    });
+  });
+
+  it('enforces owner approval and STOP across recovery actions and follow-ups', async () => {
+    const { app } = harness();
+    const journey = await post(app, '/api/v1/tenants/tenant-a/journeys', 'member-a', {
+      ...journeyPayload('recovery-stop-001'),
+      lead: {
+        source: 'MISSED_CALL',
+        workflowType: 'APPOINTMENT_SERVICE',
+        serviceId: null,
+        opportunityType: 'STANDARD_REPAIR',
+        estimatedValueCents: 250_000,
+        autonomyLevel: 'APPROVE_TO_SEND',
+      },
+    });
+    const ids = journey.json();
+    await post(app, '/api/v1/tenants/tenant-a/follow-ups', 'admin-a', {
+      idempotencyKey: 'recovery-stop-follow-up-001',
+      conversationId: ids.conversationId,
+      customerId: ids.customerId,
+      channel: 'WHATSAPP',
+      reason: 'Awaiting customer response',
+      dueAt: '2026-08-25T10:00:00.000Z',
+      draftMessage: 'Can we help?',
+    });
+    const evaluation = await post(
+      app,
+      `/api/v1/tenants/tenant-a/opportunities/${ids.opportunityId}/evaluate-recovery`,
+      'admin-a',
+      { idempotencyKey: 'recovery-stop-evaluate-001' },
+    );
+    const actionId = evaluation.json().action.id as string;
+    const denied = await post(
+      app,
+      `/api/v1/tenants/tenant-a/opportunities/${ids.opportunityId}/recovery-actions/${actionId}/approve`,
+      'admin-a',
+      { idempotencyKey: 'recovery-stop-approve-denied-001' },
+    );
+    expect(denied.statusCode).toBe(403);
+    const approved = await post(
+      app,
+      `/api/v1/tenants/tenant-a/opportunities/${ids.opportunityId}/recovery-actions/${actionId}/approve`,
+      'owner-a',
+      { idempotencyKey: 'recovery-stop-approve-001' },
+    );
+    expect(approved.json().action).toMatchObject({ status: 'READY', deliveryState: 'LIVE_DISABLED' });
+
+    const optOut = await post(
+      app,
+      `/api/v1/tenants/tenant-a/customers/${ids.customerId}/opt-out`,
+      'admin-a',
+      { idempotencyKey: 'recovery-stop-opt-out-001' },
+    );
+    expect(optOut.json()).toMatchObject({ stoppedOpportunities: 1, cancelledFollowUps: 1 });
+    const detail = await app.inject({
+      method: 'GET',
+      url: `/api/v1/tenants/tenant-a/opportunities/${ids.opportunityId}`,
+      headers: authorization('member-a'),
+    });
+    expect(detail.json().opportunity).toMatchObject({ status: 'DO_NOT_CONTACT', recoveryState: 'STOPPED' });
+    expect(detail.json().recoveryActions[0].status).toBe('CANCELLED');
+
+    const suppressed = await post(
+      app,
+      `/api/v1/tenants/tenant-a/opportunities/${ids.opportunityId}/evaluate-recovery`,
+      'admin-a',
+      { idempotencyKey: 'recovery-stop-evaluate-after-001' },
+    );
+    expect(suppressed.json().decision).toMatchObject({ eligible: false, suppressionReason: 'CONTACT_SUPPRESSED' });
+    expect(suppressed.json().action.status).toBe('SUPPRESSED');
+
+    const blockedFollowUp = await post(app, '/api/v1/tenants/tenant-a/follow-ups', 'admin-a', {
+      idempotencyKey: 'recovery-stop-follow-up-after-001',
+      conversationId: ids.conversationId,
+      customerId: ids.customerId,
+      channel: 'WHATSAPP',
+      reason: 'Must remain stopped',
+      dueAt: '2026-08-26T10:00:00.000Z',
+      draftMessage: null,
+    });
+    expect(blockedFollowUp.statusCode).toBe(409);
+    expect(blockedFollowUp.json().error.code).toBe('FOLLOW_UP_CONTACT_BLOCKED');
+  });
+
+  it('reconciles one idempotent customer response into the same opportunity', async () => {
+    const { app } = harness();
+    const journey = await post(app, '/api/v1/tenants/tenant-a/journeys', 'member-a', {
+      ...journeyPayload('customer-response-001'),
+      lead: {
+        source: 'MISSED_CALL',
+        workflowType: 'APPOINTMENT_SERVICE',
+        serviceId: null,
+        opportunityType: 'STANDARD_REPAIR',
+        estimatedValueCents: 250_000,
+        autonomyLevel: 'APPROVE_TO_SEND',
+      },
+    });
+    const ids = journey.json();
+    await post(app, '/api/v1/tenants/tenant-a/follow-ups', 'admin-a', {
+      idempotencyKey: 'customer-response-follow-up-001',
+      conversationId: ids.conversationId,
+      customerId: ids.customerId,
+      channel: 'WHATSAPP',
+      reason: 'Awaiting customer',
+      dueAt: '2026-08-25T10:00:00.000Z',
+      draftMessage: 'Can we help?',
+    });
+    await post(
+      app,
+      `/api/v1/tenants/tenant-a/opportunities/${ids.opportunityId}/evaluate-recovery`,
+      'admin-a',
+      { idempotencyKey: 'customer-response-evaluation-001' },
+    );
+    const first = await post(
+      app,
+      `/api/v1/tenants/tenant-a/opportunities/${ids.opportunityId}/customer-responses`,
+      'admin-a',
+      { idempotencyKey: 'customer-response-operation-001', providerMessageId: 'provider-response-001', body: 'Yes, I still need service.' },
+    );
+    const providerReplay = await post(
+      app,
+      `/api/v1/tenants/tenant-a/opportunities/${ids.opportunityId}/customer-responses`,
+      'admin-a',
+      { idempotencyKey: 'customer-response-operation-002', providerMessageId: 'provider-response-001', body: 'Yes, I still need service.' },
+    );
+    expect(first.json()).toMatchObject({ opportunityId: ids.opportunityId, providerReplay: false });
+    expect(providerReplay.json()).toMatchObject({ messageId: first.json().messageId, providerReplay: true });
+    const detail = await app.inject({
+      method: 'GET',
+      url: `/api/v1/tenants/tenant-a/opportunities/${ids.opportunityId}`,
+      headers: authorization('member-a'),
+    });
+    expect(detail.json().opportunity).toMatchObject({ status: 'ENGAGED', recoveryState: 'NOT_AT_RISK' });
+    expect(detail.json().recoveryActions).toHaveLength(1);
+    expect(detail.json().recoveryActions[0].status).toBe('CANCELLED');
+    const followUps = await app.inject({
+      method: 'GET',
+      url: '/api/v1/tenants/tenant-a/follow-ups',
+      headers: authorization('member-a'),
+    });
+    expect(followUps.json().followUps.find((item: { idempotencyKey: string }) => (
+      item.idempotencyKey === 'customer-response-follow-up-001'
+    ))).toMatchObject({ status: 'cancelled', stopReason: 'CUSTOMER_REPLIED' });
+  });
+
+  it('denies opportunity ID guessing across authorized tenants', async () => {
+    const { app } = harness();
+    const journey = await post(app, '/api/v1/tenants/tenant-a/journeys', 'member-a', journeyPayload('opportunity-isolation-001'));
+    const guessed = await app.inject({
+      method: 'GET',
+      url: `/api/v1/tenants/tenant-b/opportunities/${journey.json().opportunityId}`,
+      headers: authorization('owner-b'),
+    });
+    expect(guessed.statusCode).toBe(404);
+    expect(guessed.json().error.code).toBe('NOT_FOUND');
+  });
+
+  it('moves an active opportunity into Human Takeover and only resumes explicitly', async () => {
+    const { app } = harness();
+    const journey = await post(app, '/api/v1/tenants/tenant-a/journeys', 'member-a', journeyPayload('opportunity-handoff-001'));
+    await post(
+      app,
+      `/api/v1/tenants/tenant-a/conversations/${journey.json().conversationId}/handoff`,
+      'admin-a',
+      { idempotencyKey: 'opportunity-handoff-start-001', reason: 'Customer requested a person' },
+    );
+    const humanRequired = await app.inject({
+      method: 'GET',
+      url: `/api/v1/tenants/tenant-a/opportunities/${journey.json().opportunityId}`,
+      headers: authorization('member-a'),
+    });
+    expect(humanRequired.json().opportunity.recoveryState).toBe('HUMAN_REQUIRED');
+    const humanEvaluation = await post(
+      app,
+      `/api/v1/tenants/tenant-a/opportunities/${journey.json().opportunityId}/evaluate-recovery`,
+      'admin-a',
+      { idempotencyKey: 'opportunity-handoff-evaluate-001' },
+    );
+    expect(humanEvaluation.json()).toMatchObject({
+      decision: { eligible: false, suppressionReason: 'HUMAN_TAKEOVER_ACTIVE' },
+      action: { status: 'HUMAN_REQUIRED' },
+    });
+
+    await post(
+      app,
+      `/api/v1/tenants/tenant-a/conversations/${journey.json().conversationId}/resume`,
+      'admin-a',
+      { idempotencyKey: 'opportunity-handoff-resume-001' },
+    );
+    const resumed = await app.inject({
+      method: 'GET',
+      url: `/api/v1/tenants/tenant-a/opportunities/${journey.json().opportunityId}`,
+      headers: authorization('member-a'),
+    });
+    expect(resumed.json().opportunity.recoveryState).toBe('AT_RISK');
+    expect(resumed.json().recoveryActions).toContainEqual(
+      expect.objectContaining({ id: humanEvaluation.json().action.id, status: 'CANCELLED' }),
+    );
+    const afterResume = await post(
+      app,
+      `/api/v1/tenants/tenant-a/opportunities/${journey.json().opportunityId}/evaluate-recovery`,
+      'admin-a',
+      { idempotencyKey: 'opportunity-handoff-evaluate-after-resume-001' },
+    );
+    expect(afterResume.json().action.status).toBe('PENDING');
+    expect(afterResume.json().action.id).not.toBe(humanEvaluation.json().action.id);
+  });
+});
+
 describe('Copilot, webhook, and durable follow-up safety', () => {
+  it('keeps Revenue Copilot read tools tenant-scoped and recovery mutations owner-approved', async () => {
+    const { app } = harness();
+    const journey = await post(app, '/api/v1/tenants/tenant-a/journeys', 'member-a', {
+      ...journeyPayload('copilot-hvac-001'),
+      lead: {
+        source: 'MISSED_CALL',
+        workflowType: 'APPOINTMENT_SERVICE',
+        serviceId: null,
+        opportunityType: 'EMERGENCY_REPAIR',
+        estimatedValueCents: 125_000,
+        autonomyLevel: 'SUGGEST',
+      },
+    });
+    const opportunityId = journey.json().opportunityId as string;
+    const overview = await post(app, '/api/v1/tenants/tenant-a/copilot/execute', 'member-a', {
+      tool: 'GET_REVENUE_AT_RISK',
+      arguments: {},
+      approved: false,
+      idempotencyKey: 'copilot-revenue-risk-001',
+    });
+    expect(overview.json().result.commandCenter.revenueAtRiskCents).toBe(125_000);
+
+    const denied = await post(app, '/api/v1/tenants/tenant-a/copilot/execute', 'admin-a', {
+      tool: 'PREPARE_OPPORTUNITY_RECOVERY',
+      arguments: { opportunityId },
+      approved: true,
+      idempotencyKey: 'copilot-prepare-recovery-role-001',
+    });
+    const approvalRequired = await post(app, '/api/v1/tenants/tenant-a/copilot/execute', 'owner-a', {
+      tool: 'PREPARE_OPPORTUNITY_RECOVERY',
+      arguments: { opportunityId },
+      approved: false,
+      idempotencyKey: 'copilot-prepare-recovery-approval-001',
+    });
+    const approved = await post(app, '/api/v1/tenants/tenant-a/copilot/execute', 'owner-a', {
+      tool: 'PREPARE_OPPORTUNITY_RECOVERY',
+      arguments: { opportunityId },
+      approved: true,
+      idempotencyKey: 'copilot-prepare-recovery-001',
+    });
+    expect(denied.statusCode).toBe(403);
+    expect(approvalRequired.statusCode).toBe(409);
+    expect(approved.json().result.decision).toMatchObject({
+      opportunityId,
+      playType: 'MISSED_CALL_RECOVERY',
+    });
+  });
+
   it('requires explicit owner approval for high-impact Copilot execution and replays audit safely', async () => {
     const { app } = harness();
     const deniedMember = await post(app, '/api/v1/tenants/tenant-a/copilot/execute', 'admin-a', {
@@ -574,6 +1097,45 @@ describe('Copilot, webhook, and durable follow-up safety', () => {
     });
     await expect(worker.runOnce()).resolves.toBe('idle');
     expect(dispatcher.sent).toHaveLength(0);
+  });
+
+  it('cancels an existing worker lease when Human Takeover starts and blocks replacement automation', async () => {
+    const due = followUp({ id: 'leased-handoff-follow-up', dueAt: '2026-08-25T08:00:00.000Z' });
+    const { app, store } = harness({ followUps: [due] });
+    const claimed = await store.runAsSystem('follow-up-worker', (scopedStore) => (
+      scopedStore.claimDueFollowUp('leased-worker', NOW, '2026-08-25T09:05:00.000Z')
+    ));
+    expect(claimed).toMatchObject({ id: due.id, status: 'leased', leaseOwner: 'leased-worker' });
+
+    await post(
+      app,
+      '/api/v1/tenants/tenant-a/conversations/conversation-a/handoff',
+      'admin-a',
+      { idempotencyKey: 'handoff-cancel-lease-001', reason: 'Owner took control' },
+    );
+
+    const followUps = await store.listFollowUps('tenant-a');
+    expect(followUps[0]).toMatchObject({
+      status: 'cancelled',
+      stopReason: 'HUMAN_TAKEOVER',
+      leaseOwner: null,
+      leaseExpiresAt: null,
+    });
+    await expect(store.runAsSystem('follow-up-worker', (scopedStore) => (
+      scopedStore.completeFollowUp(due.id, 'leased-worker', 'attempt-after-handoff', NOW)
+    ))).rejects.toThrow('Follow-up lease is no longer owned by this worker');
+
+    const replacement = await post(app, '/api/v1/tenants/tenant-a/follow-ups', 'admin-a', {
+      idempotencyKey: 'handoff-replacement-follow-up-001',
+      conversationId: 'conversation-a',
+      customerId: 'customer-a',
+      channel: 'WHATSAPP',
+      reason: 'Should not schedule',
+      dueAt: '2026-08-26T09:00:00.000Z',
+      draftMessage: null,
+    });
+    expect(replacement.statusCode).toBe(409);
+    expect(replacement.json().error.code).toBe('FOLLOW_UP_AUTOMATION_PAUSED');
   });
 
   it('keeps migration definitions source-controlled for every durable trust-boundary record', async () => {
@@ -787,5 +1349,6 @@ async function createPaidJourney(app: FastifyInstance, suffix: string) {
     conversationId: ids.conversationId as string,
     bookingId: booking.json().bookingId as string,
     paymentId: payment.json().paymentId as string,
+    opportunityId: ids.opportunityId as string,
   };
 }

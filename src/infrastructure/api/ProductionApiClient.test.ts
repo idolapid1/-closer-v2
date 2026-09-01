@@ -73,4 +73,46 @@ describe('ProductionApiClient', () => {
     );
     await expect(client.listTenants()).rejects.toMatchObject({ status: 0, code: 'NETWORK_FAILURE' });
   });
+
+  it('uses only authenticated tenant API routes for revenue recovery operations', async () => {
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ opportunities: [] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ commandCenter: { opportunitiesAtRisk: [] } }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ decision: { id: 'decision-a' }, action: { id: 'action-a' }, replayed: false }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ action: { id: 'action-a', status: 'READY' }, replayed: false }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ customerId: 'customer/a', stoppedOpportunities: 1, cancelledFollowUps: 1, replayed: false }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ messageId: 'message-a', opportunityId: 'opportunity/a', conversationId: 'conversation-a', providerReplay: false, replayed: false }), { status: 200 }));
+    const client = new ProductionApiClient(
+      'https://api.example.test',
+      { getAccessToken: async () => 'token' },
+      fetchMock,
+    );
+    await client.listOpportunities('tenant a');
+    await client.getRevenueCommandCenter('tenant a');
+    await client.evaluateOpportunityRecovery('tenant a', 'opportunity/a', 'evaluate-001');
+    await client.approveRecoveryAction('tenant a', 'opportunity/a', 'action/a', 'approve-001');
+    await client.recordCustomerOptOut('tenant a', 'customer/a', 'opt-out-001');
+    await client.recordCustomerResponse('tenant a', 'opportunity/a', {
+      idempotencyKey: 'response-001',
+      providerMessageId: 'provider-response-001',
+      body: 'Still interested',
+    });
+
+    expect(fetchMock.mock.calls.map(([input]) => String(input))).toEqual([
+      'https://api.example.test/api/v1/tenants/tenant%20a/opportunities?limit=50&offset=0',
+      'https://api.example.test/api/v1/tenants/tenant%20a/revenue-command-center',
+      'https://api.example.test/api/v1/tenants/tenant%20a/opportunities/opportunity%2Fa/evaluate-recovery',
+      'https://api.example.test/api/v1/tenants/tenant%20a/opportunities/opportunity%2Fa/recovery-actions/action%2Fa/approve',
+      'https://api.example.test/api/v1/tenants/tenant%20a/customers/customer%2Fa/opt-out',
+      'https://api.example.test/api/v1/tenants/tenant%20a/opportunities/opportunity%2Fa/customer-responses',
+    ]);
+    expect(JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body))).toEqual({ idempotencyKey: 'evaluate-001' });
+    expect(JSON.parse(String(fetchMock.mock.calls[3]?.[1]?.body))).toEqual({ idempotencyKey: 'approve-001' });
+    expect(JSON.parse(String(fetchMock.mock.calls[4]?.[1]?.body))).toEqual({ idempotencyKey: 'opt-out-001' });
+    expect(JSON.parse(String(fetchMock.mock.calls[5]?.[1]?.body))).toEqual({
+      idempotencyKey: 'response-001',
+      providerMessageId: 'provider-response-001',
+      body: 'Still interested',
+    });
+  });
 });

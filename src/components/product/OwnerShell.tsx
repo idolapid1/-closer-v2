@@ -4,7 +4,11 @@ import {
   CalendarDays,
   ChevronDown,
   CircleEllipsis,
+  Inbox,
   Home,
+  PlugZap,
+  RotateCcw,
+  Settings,
   Sparkles,
   UsersRound,
 } from 'lucide-react';
@@ -19,6 +23,26 @@ const primaryLinks = [
   { to: '/more', label: 'עוד', icon: CircleEllipsis },
 ] as const;
 
+const revenueLinks = [
+  { to: '/revenue', label: 'הכנסות', icon: Banknote },
+  { to: '/opportunities', label: 'הזדמנויות', icon: Sparkles },
+  { to: '/inbox', label: 'שיחות', icon: Inbox },
+  { to: '/bookings', label: 'הזמנות', icon: CalendarDays },
+  { to: '/customers', label: 'לקוחות', icon: UsersRound },
+  { to: '/jobs', label: 'עבודות', icon: BriefcaseBusiness },
+  { to: '/recovery', label: 'Recovery Plays', icon: RotateCcw },
+  { to: '/connections', label: 'חיבורים', icon: PlugZap },
+  { to: '/settings', label: 'הגדרות', icon: Settings },
+] as const;
+
+const revenueMobileLinks = [
+  revenueLinks[0],
+  revenueLinks[1],
+  revenueLinks[2],
+  revenueLinks[3],
+  { to: '/settings', label: 'עוד', icon: CircleEllipsis },
+] as const;
+
 export interface OwnerShellBusiness {
   id: string;
   name: string;
@@ -30,22 +54,33 @@ export function OwnerShell({
   onBusinessChange,
   switcherLabel,
   statusText = 'CLOSER פעיל',
+  navigationMode = 'owner',
 }: {
   businesses: OwnerShellBusiness[];
   businessId: string;
   onBusinessChange: (businessId: string) => void;
   switcherLabel: string;
   statusText?: string;
+  navigationMode?: 'owner' | 'revenue';
 }) {
   const business = businesses.find((candidate) => candidate.id === businessId);
   const location = useLocation();
   const navigate = useNavigate();
   const mainRef = useRef<HTMLElement>(null);
-  const isCommandCenter = location.pathname === '/actions';
+  const navigationLinks = navigationMode === 'revenue' ? revenueLinks : primaryLinks;
+  const mobileLinks = navigationMode === 'revenue' ? revenueMobileLinks : primaryLinks;
+  const isCommandCenter = location.pathname === '/actions' || location.pathname === '/revenue';
 
   useEffect(() => {
     const titles: Record<string, string> = {
       '/actions': 'היום',
+      '/revenue': 'הכנסות',
+      '/opportunities': 'הזדמנויות',
+      '/bookings': 'הזמנות',
+      '/jobs': 'עבודות',
+      '/recovery': 'Recovery Plays',
+      '/connections': 'חיבורים',
+      '/settings': 'הגדרות',
       '/inbox': 'שיחה',
       '/customers': 'לקוחות',
       '/work': 'יומן ועבודות',
@@ -65,12 +100,12 @@ export function OwnerShell({
       <aside className="product-sidebar">
         <div className="product-brand" aria-label="CLOSER"><strong>CLOSER</strong></div>
         <nav className="product-nav" aria-label="ניווט ראשי">
-          {primaryLinks.map(({ to, label, icon: Icon }) => (
+          {navigationLinks.map(({ to, label, icon: Icon }) => (
             <Link
               key={label}
               to={to}
-              aria-current={linkActive(to, location.pathname) ? 'page' : undefined}
-              className={`product-nav-link${linkActive(to, location.pathname) ? ' active' : ''}`}
+              aria-current={linkActive(to, location.pathname, navigationMode) ? 'page' : undefined}
+              className={`product-nav-link${linkActive(to, location.pathname, navigationMode) ? ' active' : ''}`}
             >
               <Icon aria-hidden="true" /><span>{label}</span>
             </Link>
@@ -89,7 +124,9 @@ export function OwnerShell({
               value={businessId}
               onChange={(event) => {
                 onBusinessChange(event.target.value);
-                if (location.pathname.startsWith('/customer/') || location.pathname === '/inbox') navigate('/actions');
+                if (location.pathname.startsWith('/customer/') || location.pathname.startsWith('/opportunity/') || location.pathname === '/inbox') {
+                  navigate(navigationMode === 'revenue' ? '/revenue' : '/actions');
+                }
               }}
             >
               {businesses.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.name}</option>)}
@@ -105,12 +142,12 @@ export function OwnerShell({
       </div>
 
       <nav className="product-mobile-nav" aria-label="ניווט ראשי לנייד">
-        {primaryLinks.map(({ to, label, icon: Icon }) => (
+        {mobileLinks.map(({ to, label, icon: Icon }) => (
           <Link
             key={label}
             to={to}
-            aria-current={linkActive(to, location.pathname) ? 'page' : undefined}
-            className={`product-mobile-nav-link${linkActive(to, location.pathname) ? ' active' : ''}`}
+            aria-current={linkActive(to, location.pathname, navigationMode) ? 'page' : undefined}
+            className={`product-mobile-nav-link${linkActive(to, location.pathname, navigationMode) ? ' active' : ''}`}
           >
             <Icon aria-hidden="true" /><span>{label}</span>
           </Link>
@@ -120,6 +157,13 @@ export function OwnerShell({
   );
 }
 
-function linkActive(to: string, pathname: string): boolean {
-  return pathname === to || (to === '/customers' && (pathname.startsWith('/customer/') || pathname === '/inbox'));
+function linkActive(to: string, pathname: string, mode: 'owner' | 'revenue' = 'owner'): boolean {
+  if (pathname === to) return true;
+  if (mode === 'revenue') {
+    if (to === '/opportunities' && pathname.startsWith('/opportunity/')) return true;
+    if (to === '/customers' && pathname.startsWith('/customer/')) return true;
+    if (to === '/settings' && ['/settings', '/connections'].includes(pathname)) return true;
+    return false;
+  }
+  return to === '/customers' && (pathname.startsWith('/customer/') || pathname === '/inbox');
 }

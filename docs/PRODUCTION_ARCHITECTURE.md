@@ -18,7 +18,7 @@ The existing TypeScript domain remains the behavioral reference. The production 
 
 ## Database
 
-PostgreSQL 16 is the durable source in production. The migration runner is transactional, checksummed, ordered, and source-controlled. `0001_production_foundation.sql` remains the commercial foundation; `0002_production_activation.sql` adds organization invitations. Together they represent:
+PostgreSQL 16 is the durable source in production. The migration runner is transactional, checksummed, ordered, and source-controlled. `0001_production_foundation.sql` remains the commercial foundation; `0002_production_activation.sql` adds organization invitations; `0003_supabase_security_hardening.sql` adds constrained runtime roles, request identity enforcement, PostgREST protection, fixed function search paths, and server-only worker/webhook permissions; `0004_hvac_revenue_recovery.sql` adds the first-class opportunity, scoring, recovery-decision, and attribution model; `0005` adds the recovery-action lifecycle and `BOOKING_CREATED`; `0006` conservatively corrects historical booked events without material recovery evidence; `0007` grants the constrained API role only the inbound-message insert needed by the validated Fastify response boundary; and `0008` corrects unapproved historical `OBSERVE`/`SUGGEST` actions so those modes remain non-executable. Together they represent:
 
 - tenants, users, memberships, roles, services, and service knowledge;
 - customers, leads, objections, conversations, messages, and structured memory;
@@ -29,7 +29,29 @@ PostgreSQL 16 is the durable source in production. The migration runner is trans
 - connector configuration references and privacy-minimized webhook receipts;
 - idempotency records, Copilot action audits, and critical audit logs.
 
-Foreign keys include tenant ownership so references from different tenants cannot be linked. Unique constraints enforce provider-event, message, payment, booking, follow-up, revenue-causation, Copilot, and operation idempotency. Row-level policies are included as defense in depth; the API authorization service remains the primary tenant boundary and every query still includes `tenant_id`.
+### Revenue recovery boundary
+
+Customer identity, acquisition Lead, and commercial Opportunity are intentionally distinct. An Opportunity links one customer need to its lead, conversation, booking or estimate/job, score snapshots, recovery decisions, and revenue evidence. The database permits many opportunities for one customer but one opportunity per lead.
+
+`OpportunityScoringService` computes separate intent, revenue, recovery, and urgency scores from validated observation facts. `RecoveryEngine` selects one of four HVAC plays and returns a next-best-action proposal plus suppressions. Neither receives a repository or connector. `PostgresProductionStore.evaluateOpportunityRecovery` reconstructs observation from tenant-scoped database truth inside the authenticated RLS transaction, then persists the immutable decision, score snapshot, and separately authorized recovery action. A real send is not performed.
+
+Bookings reconcile the linked appointment-service Opportunity to `BOOKED` and add a non-cash booked ledger event. Attribution is conservative: only completed/waiting-customer recovery evidence is `RECOVERED`; prepared-only participation is `ASSISTED`; no material intervention is `ORGANIC`. Payments remain separate validated records. Collected attribution is recalculated from collected minus refunded ledger rows for that exact Opportunity. Human Takeover moves the Opportunity to `HUMAN_REQUIRED`, cancels even leased follow-up work and prepared actions, and explicit Resume AI returns it to `AT_RISK` without silently restoring cancelled work.
+
+The Revenue Copilot adds tenant-scoped read tools for revenue at risk, priority and human-required opportunities, plus an owner-approved recovery preparation tool. The preparation tool evaluates policy; it does not send, charge, or grant an LLM database access.
+
+Foreign keys include tenant ownership so references from different tenants cannot be linked. Unique constraints enforce provider-event, message, payment, booking, follow-up, revenue-causation, Copilot, and operation idempotency. Application authorization and RLS are both enforced; neither is treated as optional.
+
+### Request-scoped database identity
+
+Every authenticated HTTP operation owns one short PostgreSQL transaction and one transaction-bound store. The boundary performs this sequence on the same pooled connection:
+
+1. `BEGIN` and `SET LOCAL ROLE closer_api` (a `NOBYPASSRLS` role);
+2. resolve or safely synchronize the verified JWT subject in `app_users`;
+3. set `app.user_id` with transaction-local `set_config(..., true)`;
+4. resolve membership and execute all reads/mutations through that scoped store;
+5. `COMMIT` or `ROLLBACK`, which clears both role and identity before the connection returns to the pool.
+
+Unscoped `PostgresProductionStore` methods fail before querying. Nested execution contexts are rejected. No session-global `SET`, browser tenant authority, service-role key, or application `BYPASSRLS` privilege is used. First-time authenticated users receive only an `app_users` identity row; tenant authority begins only after the constrained provisioning or invitation path creates a valid membership.
 
 ## Authentication and authorization
 
@@ -61,11 +83,15 @@ Workers claim one due job with a transaction and `FOR UPDATE SKIP LOCKED`. Compl
 
 `server/worker.ts` is the explicit long-running process with graceful shutdown and a configurable poll/lease interval. A deployment may run it as a worker service or managed process. The scheduling platform must not replace the database lease.
 
+Worker database work uses the explicit `follow-up-worker` system context. It sets `SET LOCAL ROLE closer_system`, which is also `NOBYPASSRLS` and has RLS policies/table grants only for follow-up jobs and attempts. It cannot read customer, payment, revenue, membership, or general tenant tables. The public claim function is `SECURITY INVOKER`, has an empty fixed `search_path`, and is executable only by `closer_system`.
+
 ## Webhooks
 
 Webhook routes are unauthenticated by nature, so each provider adapter must verify the exact raw body before parsing. The current HMAC adapter is deterministic test infrastructure, not a WhatsApp/Meta implementation. Production provider adapters must implement the provider's documented signature scheme.
 
 The database stores provider, provider event ID, receipt time, verification state, payload hash, event type, processing state, and safe error metadata. It does not store the raw payload by default. Duplicate same-body deliveries replay the result; reuse of an event ID with changed content is rejected.
+
+Webhook lookup, signature verification, and receipt persistence run inside the explicit `webhook-ingestion` system context. The same constrained `closer_system` role receives only connector lookup and webhook receipt permissions. This path exists because an inbound webhook has no interactive user identity; it does not grant the HTTP API a system context or general tenant access.
 
 ## Secrets and integrations
 
@@ -95,7 +121,7 @@ See [Production setup](PRODUCTION_SETUP.md) for the complete Supabase, environme
 
 - provision managed PostgreSQL/Supabase and apply the migration;
 - supply a real Supabase project and exercise the implemented Auth session flow;
-- apply and verify both migrations on managed PostgreSQL;
+- apply and verify all checksummed migrations on managed PostgreSQL;
 - use managed secrets and limited database roles;
 - replace the in-process limiter before multi-instance scale;
 - deploy a worker/scheduler with observability and alerts;

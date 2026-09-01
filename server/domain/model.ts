@@ -1,3 +1,11 @@
+import type {
+  HvacOpportunityType,
+  OpportunityAutonomyLevel,
+  OpportunityRecord,
+  OpportunitySource,
+  RevenueAttributionType,
+} from './opportunity.js';
+
 export type OrganizationRole = 'owner' | 'admin' | 'member';
 
 export interface AuthenticatedIdentity {
@@ -159,6 +167,7 @@ export interface FollowUpJobRecord {
 
 export interface CustomerWorkspaceRecord {
   customer: CustomerRecord;
+  opportunities: OpportunityRecord[];
   lead: LeadRecordView | null;
   conversation: ConversationRecord | null;
   followUps: FollowUpJobRecord[];
@@ -195,6 +204,9 @@ export interface JourneyCreationInput {
     source: string;
     workflowType: 'APPOINTMENT_SERVICE' | 'QUOTE_JOB';
     serviceId: string | null;
+    opportunityType?: HvacOpportunityType | undefined;
+    estimatedValueCents?: number | null | undefined;
+    autonomyLevel?: OpportunityAutonomyLevel | undefined;
   };
   conversation: {
     channel: string;
@@ -203,6 +215,25 @@ export interface JourneyCreationInput {
 
 export interface JourneyCreationResult {
   customerId: string;
+  leadId: string;
+  conversationId: string;
+  opportunityId: string;
+  replayed: boolean;
+}
+
+export interface OpportunityCreationInput {
+  idempotencyKey: string;
+  source: OpportunitySource;
+  workflowType: 'APPOINTMENT_SERVICE' | 'QUOTE_JOB';
+  serviceId: string | null;
+  opportunityType: HvacOpportunityType;
+  estimatedValueCents: number | null;
+  autonomyLevel: OpportunityAutonomyLevel;
+  channel: string;
+}
+
+export interface OpportunityCreationResult {
+  opportunityId: string;
   leadId: string;
   conversationId: string;
   replayed: boolean;
@@ -237,6 +268,18 @@ export interface PaymentCreationResult {
   replayed: boolean;
 }
 
+export interface CustomerResponseInput {
+  providerMessageId: string;
+  body: string;
+}
+
+export interface CustomerResponseResult {
+  messageId: string;
+  opportunityId: string;
+  conversationId: string;
+  providerReplay: boolean;
+}
+
 export type RevenueLedgerStage =
   | 'potential'
   | 'pipeline'
@@ -256,6 +299,10 @@ export interface RevenueLedgerEntry {
   amountCents: number;
   causationKey: string;
   occurredAt: string;
+  opportunityId?: string | null | undefined;
+  eventType?: 'ESTIMATE_CREATED' | 'POTENTIAL_REVENUE_AT_RISK' | 'BOOKING_CREATED' | 'BOOKING_RECOVERED' | 'JOB_WON' | 'PAYMENT_RECEIVED' | 'REFUND' | 'ADJUSTMENT' | null | undefined;
+  attributionType?: RevenueAttributionType | null | undefined;
+  attributionReason?: string | null | undefined;
 }
 
 export interface CopilotExecutionInput {

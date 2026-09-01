@@ -1,6 +1,6 @@
-# Production Activation v1 test report
+# HVAC revenue recovery and production trust-boundary test report
 
-Status: the complete local quality gate passed on 2026-08-25 using the supported bundled Node 24.19.0 runtime. `src/test/setup.ts` remains unchanged; the test command disables Node's experimental global Web Storage so jsdom owns browser `localStorage`.
+Status: the complete local quality gate passed on 2026-09-01 using the supported bundled Node 24.19.0 runtime. `src/test/setup.ts` remains unchanged; the test command disables Node's experimental global Web Storage so jsdom owns browser `localStorage`.
 
 Client/jsdom and server/Node tests now use separate Vitest configurations. This preserves the browser setup exactly as before and prevents a Node test from pretending a browser global exists.
 
@@ -52,8 +52,15 @@ The suite preserves all Phase 1–3 domain/application scenarios and adds owner-
 - liveness/readiness separation, safe dependency errors, distributed rate-limiter interface, and explicit worker lifecycle;
 - checksummed `0002` migration plus real-schema verification for critical tables, indexes, RLS policies, and worker claim function;
 - an isolated real-PostgreSQL suite that applies migrations twice and verifies persistence across API restart when `TEST_DATABASE_URL` is supplied.
+- Customer → multiple Opportunity persistence, four deterministic HVAC recovery plays, explainable scoring, consent/contact-window suppression, and Human Takeover reconciliation;
+- persisted recovery decisions separated from approval/action lifecycle state across `OBSERVE`, `SUGGEST`, `APPROVE_TO_SEND`, and bounded `AUTOPILOT`;
+- monotonic active-recovery reconciliation, single-action reuse, repeat/concurrent approval convergence, explicit STOP semantics, and duplicate customer-response protection;
+- prepared/approved action states that remain `LIVE_DISABLED` and do not become sends, bookings, payments, or recovered revenue;
+- conservative `ORGANIC`/`ASSISTED`/`RECOVERED` booking evidence, non-cash booking events, validated payment attribution, and refund netting;
+- server-backed Revenue Command Center and Opportunity detail contracts without browser aggregation or fixture metrics;
+- real PostgreSQL opportunity/recovery RLS, cross-tenant hostile reads, transaction-local identity reuse, booking reconciliation, follow-up suppression, and action concurrency.
 
-Latest automated result: **25 test files and 208 tests passed**: 169 browser/domain/application tests and 39 server/auth/security tests. ESLint passed with zero warnings, both strict TypeScript projects passed, the demo client and server builds passed, the separately configured production client and server build passed, `npm run verify` passed, and the fresh npm audit reported 0 vulnerabilities.
+Latest automated result: **26 default test files and 237 tests passed**: 174 browser/domain/application tests and 63 server/auth/security tests. The opt-in real-PostgreSQL suite adds **8/8 passing integration tests**, for **245 passing tests across both gates**. ESLint passed with zero warnings, both strict TypeScript projects passed, the demo client and server builds passed, `npm run verify` passed, and the fresh npm audit reported 0 vulnerabilities. Migrations `0001` through `0008` were applied against local PostgreSQL 16, run a second time without duplication, and checksum/schema verified.
 
 ## Rendered QA
 
@@ -78,16 +85,16 @@ Fresh page loads showed no Vite error overlay; the in-app browser console return
 
 ## Production build
 
-The authenticated production build transforms 1,987 modules and emits:
+The verified client build transforms 1,987 modules and emits:
 
 - `dist/index.html` 0.60 kB (0.39 kB gzip)
-- main CSS 103.46 kB (19.20 kB gzip)
-- main JavaScript 460.22 kB (137.16 kB gzip)
+- main CSS 114.29 kB (20.87 kB gzip)
+- main JavaScript 461.54 kB (137.55 kB gzip)
 - lazy Today JavaScript 136.73 kB (48.07 kB gzip)
 - lazy Today CSS 1.94 kB (0.83 kB gzip)
-- lazy Production App JavaScript 255.19 kB (67.35 kB gzip)
+- lazy Production App JavaScript 280.86 kB (73.04 kB gzip)
 - liquid-metal material 297.41 kB
 
 The main JavaScript chunk remains below Vite’s 500 kB advisory. Supabase/Auth and production pages stay in the lazy Production App chunk; GSAP/OGL and the ambient identity stay in the lazy Today chunk.
 
-The server build also emits strict ESM JavaScript and declarations under ignored `dist-server/server/`; both source migrations remain under `server/migrations/`. This environment supplied no Supabase credentials, `TEST_DATABASE_URL`, Docker, or `psql`, so hosted migration, real Auth, the real-PostgreSQL integration suite, and authenticated reload against Supabase are not claimed.
+The server build also emits strict ESM JavaScript and declarations under ignored `dist-server/server/`; all source migrations remain under `server/migrations/`. A dedicated local PostgreSQL 16 database supplied the real database proof. Hosted Supabase credentials were not available, so hosted migration, hosted Auth, provider delivery, and an authenticated browser reload against Supabase are not claimed.

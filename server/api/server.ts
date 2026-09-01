@@ -14,12 +14,18 @@ import {
   bookingCreationSchema,
   cancellationSchema,
   copilotExecutionSchema,
+  customerOptOutSchema,
+  customerResponseSchema,
   followUpCreationSchema,
   handoffSchema,
   invitationAcceptanceSchema,
   invitationCreationSchema,
   journeyCreationSchema,
+  opportunityCreationSchema,
+  opportunityListQuerySchema,
   paymentCreationSchema,
+  recoveryEvaluationSchema,
+  recoveryActionApprovalSchema,
   resourceIdSchema,
   revenueEntrySchema,
   resumeSchema,
@@ -46,6 +52,12 @@ const tenantParamsSchema = z.object({ tenantId: resourceIdSchema });
 const followUpParamsSchema = z.object({ tenantId: resourceIdSchema, followUpId: resourceIdSchema });
 const conversationParamsSchema = z.object({ tenantId: resourceIdSchema, conversationId: resourceIdSchema });
 const customerParamsSchema = z.object({ tenantId: resourceIdSchema, customerId: resourceIdSchema });
+const opportunityParamsSchema = z.object({ tenantId: resourceIdSchema, opportunityId: resourceIdSchema });
+const recoveryActionParamsSchema = z.object({
+  tenantId: resourceIdSchema,
+  opportunityId: resourceIdSchema,
+  actionId: resourceIdSchema,
+});
 const invitationParamsSchema = z.object({ tenantId: resourceIdSchema, invitationId: resourceIdSchema });
 const webhookParamsSchema = z.object({ provider: resourceIdSchema, endpointId: resourceIdSchema });
 
@@ -55,18 +67,16 @@ export function buildProductionServer(dependencies: ProductionServerDependencies
     bodyLimit: 256 * 1024,
     requestIdHeader: 'x-request-id',
   });
-  const authorization = new AuthorizationService(dependencies.store);
   const now = dependencies.now ?? (() => new Date());
-  const idempotency = new IdempotencyService(dependencies.store, now);
   const apiLimiter = dependencies.apiRateLimiter ?? new InMemoryRateLimiter(dependencies.requestRateLimit ?? 240);
   const webhookLimiter = dependencies.webhookRateLimiter ?? new InMemoryRateLimiter(dependencies.webhookRateLimit ?? 600);
-  const invitations = new InvitationService(dependencies.store, {
+  const invitationOptions = {
     now,
     exposeDevelopmentLink: dependencies.exposeDevelopmentInviteLinks ?? false,
     ...(dependencies.developmentInviteBaseUrl
       ? { developmentAcceptanceBaseUrl: dependencies.developmentInviteBaseUrl }
       : {}),
-  });
+  };
   const requestContext = new WeakMap<FastifyRequest, {
     startedAt: number;
     userId?: string;
@@ -134,234 +144,381 @@ export function buildProductionServer(dependencies: ProductionServerDependencies
   });
 
   app.get('/api/v1/tenants', async (request) => {
-    const identity = await authenticate(request, dependencies.authenticator, apiLimiter, requestContext);
-    return { tenants: await dependencies.store.listMemberships(identity.userId) };
+    return withAuthenticatedStore(request, async (identity, store) => ({
+      tenants: await store.listMemberships(identity.userId),
+    }));
   });
 
   app.post('/api/v1/organizations', async (request) => {
-    const identity = await authenticate(request, dependencies.authenticator, apiLimiter, requestContext);
     const input = tenantProvisionSchema.parse(parseJsonBody(request.body));
-    return dependencies.store.provisionTenant(identity, input, now().toISOString());
+    return withAuthenticatedStore(request, (identity, store) => (
+      store.provisionTenant(identity, input, now().toISOString())
+    ));
   });
 
   app.get('/api/v1/tenants/:tenantId/customers', async (request) => {
     const { tenantId } = tenantParamsSchema.parse(request.params);
-    const identity = await authorize(request, tenantId, 'member');
-    void identity;
-    return { customers: await dependencies.store.listCustomers(tenantId) };
+    return withAuthorizedStore(request, tenantId, 'member', async (_identity, store) => ({
+      customers: await store.listCustomers(tenantId),
+    }));
   });
 
   app.get('/api/v1/tenants/:tenantId/customers/:customerId', async (request) => {
     const { tenantId, customerId } = customerParamsSchema.parse(request.params);
-    await authorize(request, tenantId, 'member');
-    return { workspace: assertFound(await dependencies.store.getCustomerWorkspace(tenantId, customerId)) };
+    return withAuthorizedStore(request, tenantId, 'member', async (_identity, store) => ({
+      workspace: assertFound(await store.getCustomerWorkspace(tenantId, customerId)),
+    }));
   });
 
   app.get('/api/v1/tenants/:tenantId/owner-snapshot', async (request) => {
     const { tenantId } = tenantParamsSchema.parse(request.params);
-    await authorize(request, tenantId, 'member');
-    return { snapshot: await dependencies.store.getOwnerSnapshot(tenantId) };
+    return withAuthorizedStore(request, tenantId, 'member', async (_identity, store) => ({
+      snapshot: await store.getOwnerSnapshot(tenantId),
+    }));
+  });
+
+  app.get('/api/v1/tenants/:tenantId/opportunities', async (request) => {
+    const { tenantId } = tenantParamsSchema.parse(request.params);
+    const query = opportunityListQuerySchema.parse(request.query);
+    return withAuthorizedStore(request, tenantId, 'member', async (_identity, store) => ({
+      opportunities: await store.listOpportunities(tenantId, query.limit, query.offset),
+      page: { limit: query.limit, offset: query.offset },
+    }));
+  });
+
+  app.get('/api/v1/tenants/:tenantId/opportunities/:opportunityId', async (request) => {
+    const { tenantId, opportunityId } = opportunityParamsSchema.parse(request.params);
+    return withAuthorizedStore(request, tenantId, 'member', async (_identity, store) => (
+      assertFound(await store.getOpportunityDetail(tenantId, opportunityId))
+    ));
+  });
+
+  app.get('/api/v1/tenants/:tenantId/revenue-command-center', async (request) => {
+    const { tenantId } = tenantParamsSchema.parse(request.params);
+    return withAuthorizedStore(request, tenantId, 'member', async (_identity, store) => ({
+      commandCenter: await store.getRevenueCommandCenter(tenantId),
+    }));
+  });
+
+  app.post('/api/v1/tenants/:tenantId/opportunities/:opportunityId/evaluate-recovery', async (request) => {
+    const { tenantId, opportunityId } = opportunityParamsSchema.parse(request.params);
+    const input = recoveryEvaluationSchema.parse(parseJsonBody(request.body));
+    return withAuthorizedStore(request, tenantId, 'admin', async (identity, store) => {
+      const execution = await new IdempotencyService(store, now).execute({
+        tenantId,
+        scope: 'opportunity:evaluate-recovery',
+        key: input.idempotencyKey,
+        request: { opportunityId },
+        operation: () => store.evaluateOpportunityRecovery(
+          tenantId,
+          opportunityId,
+          identity,
+          input.idempotencyKey,
+          now().toISOString(),
+        ),
+      });
+      return { ...execution.value, replayed: execution.replayed };
+    });
+  });
+
+  app.post('/api/v1/tenants/:tenantId/opportunities/:opportunityId/recovery-actions/:actionId/approve', async (request) => {
+    const { tenantId, opportunityId, actionId } = recoveryActionParamsSchema.parse(request.params);
+    const input = recoveryActionApprovalSchema.parse(parseJsonBody(request.body));
+    return withAuthorizedStore(request, tenantId, 'owner', async (identity, store) => {
+      const execution = await new IdempotencyService(store, now).execute({
+        tenantId,
+        scope: 'recovery-action:approve',
+        key: input.idempotencyKey,
+        request: { opportunityId, actionId },
+        operation: () => store.approveRecoveryAction(
+          tenantId,
+          opportunityId,
+          actionId,
+          identity,
+          now().toISOString(),
+        ),
+      });
+      return { action: execution.value, replayed: execution.replayed };
+    });
+  });
+
+  app.post('/api/v1/tenants/:tenantId/customers/:customerId/opt-out', async (request) => {
+    const { tenantId, customerId } = customerParamsSchema.parse(request.params);
+    const input = customerOptOutSchema.parse(parseJsonBody(request.body));
+    return withAuthorizedStore(request, tenantId, 'admin', async (identity, store) => {
+      const execution = await new IdempotencyService(store, now).execute({
+        tenantId,
+        scope: 'customer:opt-out',
+        key: input.idempotencyKey,
+        request: { customerId },
+        operation: () => store.recordCustomerOptOut(tenantId, customerId, identity, now().toISOString()),
+      });
+      return { ...execution.value, replayed: execution.replayed };
+    });
+  });
+
+  app.post('/api/v1/tenants/:tenantId/opportunities/:opportunityId/customer-responses', async (request) => {
+    const { tenantId, opportunityId } = opportunityParamsSchema.parse(request.params);
+    const input = customerResponseSchema.parse(parseJsonBody(request.body));
+    return withAuthorizedStore(request, tenantId, 'admin', async (identity, store) => {
+      const execution = await new IdempotencyService(store, now).execute({
+        tenantId,
+        scope: 'opportunity:customer-response',
+        key: input.idempotencyKey,
+        request: { opportunityId, providerMessageId: input.providerMessageId, body: input.body },
+        operation: () => store.recordCustomerResponse(
+          tenantId,
+          opportunityId,
+          identity,
+          { providerMessageId: input.providerMessageId, body: input.body },
+          now().toISOString(),
+        ),
+      });
+      return { ...execution.value, replayed: execution.replayed };
+    });
   });
 
   app.get('/api/v1/tenants/:tenantId/follow-ups', async (request) => {
     const { tenantId } = tenantParamsSchema.parse(request.params);
-    await authorize(request, tenantId, 'member');
-    return { followUps: await dependencies.store.listFollowUps(tenantId) };
+    return withAuthorizedStore(request, tenantId, 'member', async (_identity, store) => ({
+      followUps: await store.listFollowUps(tenantId),
+    }));
   });
 
   app.get('/api/v1/tenants/:tenantId/conversations', async (request) => {
     const { tenantId } = tenantParamsSchema.parse(request.params);
-    await authorize(request, tenantId, 'member');
-    return { conversations: await dependencies.store.listConversations(tenantId) };
+    return withAuthorizedStore(request, tenantId, 'member', async (_identity, store) => ({
+      conversations: await store.listConversations(tenantId),
+    }));
   });
 
   app.get('/api/v1/tenants/:tenantId/revenue', async (request) => {
     const { tenantId } = tenantParamsSchema.parse(request.params);
-    await authorize(request, tenantId, 'member');
-    return { revenue: await dependencies.store.getRevenueSummary(tenantId) };
+    return withAuthorizedStore(request, tenantId, 'member', async (_identity, store) => ({
+      revenue: await store.getRevenueSummary(tenantId),
+    }));
   });
 
   app.get('/api/v1/tenants/:tenantId/connectors', async (request) => {
     const { tenantId } = tenantParamsSchema.parse(request.params);
-    await authorize(request, tenantId, 'admin');
-    return { connectors: await dependencies.store.listConnectorConfigurations(tenantId) };
+    return withAuthorizedStore(request, tenantId, 'admin', async (_identity, store) => ({
+      connectors: await store.listConnectorConfigurations(tenantId),
+    }));
   });
 
   app.post('/api/v1/tenants/:tenantId/invitations', async (request) => {
     const { tenantId } = tenantParamsSchema.parse(request.params);
-    const identity = await authorize(request, tenantId, 'admin');
     const input = invitationCreationSchema.parse(parseJsonBody(request.body));
-    return invitations.create(tenantId, identity, input);
+    return withAuthorizedStore(request, tenantId, 'admin', (identity, store) => (
+      new InvitationService(store, invitationOptions).create(tenantId, identity, input)
+    ));
   });
 
   app.post('/api/v1/invitations/accept', async (request) => {
-    const identity = await authenticate(request, dependencies.authenticator, apiLimiter, requestContext);
     const input = invitationAcceptanceSchema.parse(parseJsonBody(request.body));
-    return invitations.accept(input.token, identity);
+    return withAuthenticatedStore(request, (identity, store) => (
+      new InvitationService(store, invitationOptions).accept(input.token, identity)
+    ));
   });
 
   app.post('/api/v1/tenants/:tenantId/invitations/:invitationId/revoke', async (request) => {
     const { tenantId, invitationId } = invitationParamsSchema.parse(request.params);
-    const identity = await authorize(request, tenantId, 'admin');
-    return {
-      invitation: assertFound(await invitations.revoke(tenantId, invitationId, identity)),
-    };
+    return withAuthorizedStore(request, tenantId, 'admin', async (identity, store) => ({
+      invitation: assertFound(
+        await new InvitationService(store, invitationOptions).revoke(tenantId, invitationId, identity),
+      ),
+    }));
   });
 
   app.post('/api/v1/tenants/:tenantId/conversations/:conversationId/handoff', async (request) => {
     const { tenantId, conversationId } = conversationParamsSchema.parse(request.params);
-    const identity = await authorize(request, tenantId, 'admin');
     const input = handoffSchema.parse(parseJsonBody(request.body));
-    const execution = await idempotency.execute({
-      tenantId,
-      scope: 'conversation:handoff',
-      key: input.idempotencyKey,
-      request: { conversationId, reason: input.reason },
-      operation: () => dependencies.store.startHumanTakeover(
+    return withAuthorizedStore(request, tenantId, 'admin', async (identity, store) => {
+      const execution = await new IdempotencyService(store, now).execute({
         tenantId,
-        conversationId,
-        identity,
-        input.reason,
-        now().toISOString(),
-      ),
+        scope: 'conversation:handoff',
+        key: input.idempotencyKey,
+        request: { conversationId, reason: input.reason },
+        operation: () => store.startHumanTakeover(
+          tenantId,
+          conversationId,
+          identity,
+          input.reason,
+          now().toISOString(),
+        ),
+      });
+      return { ...execution.value, replayed: execution.replayed };
     });
-    return { ...execution.value, replayed: execution.replayed };
   });
 
   app.post('/api/v1/tenants/:tenantId/conversations/:conversationId/resume', async (request) => {
     const { tenantId, conversationId } = conversationParamsSchema.parse(request.params);
-    const identity = await authorize(request, tenantId, 'admin');
     const input = resumeSchema.parse(parseJsonBody(request.body));
-    const execution = await idempotency.execute({
-      tenantId,
-      scope: 'conversation:resume',
-      key: input.idempotencyKey,
-      request: { conversationId },
-      operation: () => dependencies.store.resumeAssistant(
+    return withAuthorizedStore(request, tenantId, 'admin', async (identity, store) => {
+      const execution = await new IdempotencyService(store, now).execute({
         tenantId,
-        conversationId,
-        identity,
-        now().toISOString(),
-      ),
+        scope: 'conversation:resume',
+        key: input.idempotencyKey,
+        request: { conversationId },
+        operation: () => store.resumeAssistant(
+          tenantId,
+          conversationId,
+          identity,
+          now().toISOString(),
+        ),
+      });
+      return { ...execution.value, replayed: execution.replayed };
     });
-    return { ...execution.value, replayed: execution.replayed };
   });
 
   app.post('/api/v1/tenants/:tenantId/journeys', async (request) => {
     const { tenantId } = tenantParamsSchema.parse(request.params);
-    const identity = await authorize(request, tenantId, 'member');
     const input = journeyCreationSchema.parse(parseJsonBody(request.body));
-    const execution = await idempotency.execute({
-      tenantId,
-      scope: 'journey:create',
-      key: input.idempotencyKey,
-      request: input,
-      operation: () => dependencies.store.createJourney(tenantId, identity, input, now().toISOString()),
+    return withAuthorizedStore(request, tenantId, 'member', async (identity, store) => {
+      const execution = await new IdempotencyService(store, now).execute({
+        tenantId,
+        scope: 'journey:create',
+        key: input.idempotencyKey,
+        request: input,
+        operation: () => store.createJourney(tenantId, identity, input, now().toISOString()),
+      });
+      return { ...execution.value, replayed: execution.replayed };
     });
-    return { ...execution.value, replayed: execution.replayed };
+  });
+
+  app.post('/api/v1/tenants/:tenantId/customers/:customerId/opportunities', async (request) => {
+    const { tenantId, customerId } = customerParamsSchema.parse(request.params);
+    const input = opportunityCreationSchema.parse(parseJsonBody(request.body));
+    return withAuthorizedStore(request, tenantId, 'member', async (identity, store) => {
+      const execution = await new IdempotencyService(store, now).execute({
+        tenantId,
+        scope: 'opportunity:create',
+        key: input.idempotencyKey,
+        request: { customerId, ...input },
+        operation: () => store.createOpportunity(
+          tenantId,
+          customerId,
+          identity,
+          input,
+          now().toISOString(),
+        ),
+      });
+      return { ...execution.value, replayed: execution.replayed };
+    });
   });
 
   app.post('/api/v1/tenants/:tenantId/follow-ups', async (request) => {
     const { tenantId } = tenantParamsSchema.parse(request.params);
-    const identity = await authorize(request, tenantId, 'admin');
     const input = followUpCreationSchema.parse(parseJsonBody(request.body));
-    const execution = await idempotency.execute({
-      tenantId,
-      scope: 'follow-up:create',
-      key: input.idempotencyKey,
-      request: input,
-      operation: () => dependencies.store.createFollowUp(tenantId, identity, input, now().toISOString()),
+    return withAuthorizedStore(request, tenantId, 'admin', async (identity, store) => {
+      const execution = await new IdempotencyService(store, now).execute({
+        tenantId,
+        scope: 'follow-up:create',
+        key: input.idempotencyKey,
+        request: input,
+        operation: () => store.createFollowUp(tenantId, identity, input, now().toISOString()),
+      });
+      return { followUp: execution.value, replayed: execution.replayed };
     });
-    return { followUp: execution.value, replayed: execution.replayed };
   });
 
   app.post('/api/v1/tenants/:tenantId/follow-ups/:followUpId/cancel', async (request) => {
     const { tenantId, followUpId } = followUpParamsSchema.parse(request.params);
-    const identity = await authorize(request, tenantId, 'admin');
     const input = cancellationSchema.parse(parseJsonBody(request.body));
-    const execution = await idempotency.execute({
-      tenantId,
-      scope: 'follow-up:cancel',
-      key: input.idempotencyKey,
-      request: { followUpId },
-      operation: async () => assertFound(
-        await dependencies.store.cancelFollowUp(tenantId, followUpId, identity, now().toISOString()),
-      ),
+    return withAuthorizedStore(request, tenantId, 'admin', async (identity, store) => {
+      const execution = await new IdempotencyService(store, now).execute({
+        tenantId,
+        scope: 'follow-up:cancel',
+        key: input.idempotencyKey,
+        request: { followUpId },
+        operation: async () => assertFound(
+          await store.cancelFollowUp(tenantId, followUpId, identity, now().toISOString()),
+        ),
+      });
+      return { followUp: execution.value, replayed: execution.replayed };
     });
-    return { followUp: execution.value, replayed: execution.replayed };
   });
 
   app.post('/api/v1/tenants/:tenantId/bookings', async (request) => {
     const { tenantId } = tenantParamsSchema.parse(request.params);
-    const identity = await authorize(request, tenantId, 'admin');
     const input = bookingCreationSchema.parse(parseJsonBody(request.body));
-    const execution = await idempotency.execute({
-      tenantId,
-      scope: 'booking:create',
-      key: input.idempotencyKey,
-      request: input,
-      operation: () => dependencies.store.createBooking(tenantId, identity, input, now().toISOString()),
+    return withAuthorizedStore(request, tenantId, 'admin', async (identity, store) => {
+      const execution = await new IdempotencyService(store, now).execute({
+        tenantId,
+        scope: 'booking:create',
+        key: input.idempotencyKey,
+        request: input,
+        operation: () => store.createBooking(tenantId, identity, input, now().toISOString()),
+      });
+      return { ...execution.value, replayed: execution.replayed };
     });
-    return { ...execution.value, replayed: execution.replayed };
   });
 
   app.post('/api/v1/tenants/:tenantId/payments', async (request) => {
     const { tenantId } = tenantParamsSchema.parse(request.params);
-    const identity = await authorize(request, tenantId, 'admin');
     const input = paymentCreationSchema.parse(parseJsonBody(request.body));
-    const execution = await idempotency.execute({
-      tenantId,
-      scope: 'payment:create',
-      key: input.idempotencyKey,
-      request: input,
-      operation: () => dependencies.store.createPayment(tenantId, identity, input, now().toISOString()),
+    return withAuthorizedStore(request, tenantId, 'admin', async (identity, store) => {
+      const execution = await new IdempotencyService(store, now).execute({
+        tenantId,
+        scope: 'payment:create',
+        key: input.idempotencyKey,
+        request: input,
+        operation: () => store.createPayment(tenantId, identity, input, now().toISOString()),
+      });
+      return { ...execution.value, replayed: execution.replayed };
     });
-    return { ...execution.value, replayed: execution.replayed };
   });
 
   app.post('/api/v1/tenants/:tenantId/revenue-events', async (request) => {
     const { tenantId } = tenantParamsSchema.parse(request.params);
-    const identity = await authorize(request, tenantId, 'admin');
     const input = revenueEntrySchema.parse(parseJsonBody(request.body));
-    const execution = await idempotency.execute({
-      tenantId,
-      scope: 'revenue:append',
-      key: input.idempotencyKey,
-      request: input,
-      operation: () => dependencies.store.appendRevenueEntry(
+    return withAuthorizedStore(request, tenantId, 'admin', async (identity, store) => {
+      const execution = await new IdempotencyService(store, now).execute({
         tenantId,
-        identity,
-        {
-          customerId: input.customerId,
-          leadId: input.leadId,
-          conversationId: input.conversationId,
-          paymentId: input.paymentId,
-          stage: input.stage,
-          amountCents: input.amountCents,
-          causationKey: input.causationKey,
-        },
-        now().toISOString(),
-      ),
+        scope: 'revenue:append',
+        key: input.idempotencyKey,
+        request: input,
+        operation: () => store.appendRevenueEntry(
+          tenantId,
+          identity,
+          {
+            customerId: input.customerId,
+            leadId: input.leadId,
+            conversationId: input.conversationId,
+            paymentId: input.paymentId,
+            stage: input.stage,
+            amountCents: input.amountCents,
+            causationKey: input.causationKey,
+            opportunityId: input.opportunityId,
+            eventType: input.eventType,
+            attributionType: input.attributionType,
+            attributionReason: input.attributionReason,
+          },
+          now().toISOString(),
+        ),
+      });
+      return { revenueEvent: execution.value, replayed: execution.replayed };
     });
-    return { revenueEvent: execution.value, replayed: execution.replayed };
   });
 
   app.post('/api/v1/tenants/:tenantId/copilot/execute', async (request) => {
     const { tenantId } = tenantParamsSchema.parse(request.params);
     const input = copilotExecutionSchema.parse(parseJsonBody(request.body));
-    const minimumRole: OrganizationRole = input.tool === 'PREPARE_REACTIVATION' ? 'owner' : 'member';
-    const identity = await authorize(request, tenantId, minimumRole);
-    if (input.tool === 'PREPARE_REACTIVATION' && !input.approved) {
-      throw new ApiError(409, 'OWNER_APPROVAL_REQUIRED', 'This action requires explicit owner approval');
-    }
-    const execution = await idempotency.execute({
-      tenantId,
-      scope: `copilot:${input.tool}`,
-      key: input.idempotencyKey,
-      request: input,
-      operation: () => dependencies.store.executeCopilot(tenantId, identity, input, now().toISOString()),
+    const highImpact = ['PREPARE_REACTIVATION', 'PREPARE_OPPORTUNITY_RECOVERY'].includes(input.tool);
+    const minimumRole: OrganizationRole = highImpact ? 'owner' : 'member';
+    return withAuthorizedStore(request, tenantId, minimumRole, async (identity, store) => {
+      if (highImpact && !input.approved) {
+        throw new ApiError(409, 'OWNER_APPROVAL_REQUIRED', 'This action requires explicit owner approval');
+      }
+      const execution = await new IdempotencyService(store, now).execute({
+        tenantId,
+        scope: `copilot:${input.tool}`,
+        key: input.idempotencyKey,
+        request: input,
+        operation: () => store.executeCopilot(tenantId, identity, input, now().toISOString()),
+      });
+      return { ...execution.value, status: execution.replayed ? 'replayed' : execution.value.status };
     });
-    return { ...execution.value, status: execution.replayed ? 'replayed' : execution.value.status };
   });
 
   app.post('/api/v1/webhooks/:provider/:endpointId', async (request) => {
@@ -378,16 +535,30 @@ export function buildProductionServer(dependencies: ProductionServerDependencies
     });
   });
 
-  async function authorize(
+  async function withAuthenticatedStore<T>(
+    request: FastifyRequest,
+    operation: (identity: AuthenticatedIdentity, store: ProductionStore) => Promise<T>,
+  ): Promise<T> {
+    const identity = await authenticate(request, dependencies.authenticator, apiLimiter, requestContext);
+    return dependencies.store.runAsAuthenticated(
+      identity,
+      (store) => operation(identity, store),
+      { provisionAppUser: true },
+    );
+  }
+
+  async function withAuthorizedStore<T>(
     request: FastifyRequest,
     tenantId: string,
     minimumRole: OrganizationRole,
-  ): Promise<AuthenticatedIdentity> {
-    const identity = await authenticate(request, dependencies.authenticator, apiLimiter, requestContext);
-    await authorization.requireMembership(identity, tenantId, minimumRole);
-    const context = requestContext.get(request);
-    if (context) context.tenantId = tenantId;
-    return identity;
+    operation: (identity: AuthenticatedIdentity, store: ProductionStore) => Promise<T>,
+  ): Promise<T> {
+    return withAuthenticatedStore(request, async (identity, store) => {
+      await new AuthorizationService(store).requireMembership(identity, tenantId, minimumRole);
+      const context = requestContext.get(request);
+      if (context) context.tenantId = tenantId;
+      return operation(identity, store);
+    });
   }
 
   return app;

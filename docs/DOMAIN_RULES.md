@@ -41,3 +41,16 @@ Inbound provider IDs, external connector conversation IDs, appointment/quote/job
 ## Owner action boundary
 
 Owner Copilot tools require an active owner TeamMember scoped to the same business. Read tools return operational projections without message bodies. Business-changing tools require explicit approval and call validated `CloserService` use cases; no provider or future LLM receives repository mutation access. Audit activities store tool and result count, not customer message content.
+
+## Opportunity and recovery
+
+- Customer is identity; Lead is acquisition context; Opportunity is one commercial need. One customer can have many opportunities, while a lead can back at most one Opportunity.
+- Status and recovery state are orthogonal. A won or do-not-contact Opportunity cannot run recovery. `DO_NOT_CONTACT` always has `STOPPED` recovery.
+- Intent, revenue, recovery, and urgency are independent deterministic scores. Every snapshot stores policy version, reason codes, explanation, causation key, and timestamp.
+- Missed-call, new-lead, unsold-estimate, and old-lead recovery are bounded policies, not arbitrary workflows.
+- Recovery decisions explain the recommendation; recovery actions separately persist preparation/execution state. `OBSERVE` and `SUGGEST` cannot become send-ready, `APPROVE_TO_SEND` requires owner approval, and high-value or booking actions cannot bypass approval under `AUTOPILOT`.
+- Opt-out, explicit rejection, Human Takeover, closed work, invalid contact time, or an existing active recovery suppress automated action.
+- A customer reply is idempotent by provider message ID, cancels stale action/follow-up work, and updates the same Opportunity; a reused provider ID with different facts is rejected.
+- A validated booking may resolve an at-risk Opportunity and records booked value only. It does not increase collected revenue. `RECOVERED` attribution requires material completed/waiting-customer recovery evidence; prepared-only participation is `ASSISTED`, and absence of intervention remains `ORGANIC`.
+- Actual recovered revenue is collected payment evidence linked to the same tenant/customer/lead/conversation/Opportunity, net of refunds. Estimated value and accepted estimates are never cash.
+- Human Takeover changes recovery to `HUMAN_REQUIRED`, cancels pending delivery, and needs an explicit resume. Resume does not resurrect cancelled follow-ups automatically.

@@ -1,6 +1,6 @@
-# CLOSER v2 — revenue operating-system foundation
+# CLOSER v2 — AI Revenue Recovery OS
 
-CLOSER is a **lead-to-cash autopilot for service businesses**: it moves every inquiry toward the next best validated action until the customer books or approves, completes the service, and pays. The authoritative direction is the [CLOSER Product Bible](docs/PRODUCT_BIBLE.md).
+CLOSER is a **lead-to-cash and revenue-recovery operating system for service businesses**, focused first on HVAC: it finds missed calls, stalled leads, unsold estimates, and returning customers; ranks recoverable opportunities; and prepares the next validated action until booking and collected revenue. The authoritative direction is the [CLOSER Product Bible](docs/PRODUCT_BIBLE.md).
 
 Phase 4.2 propagates the approved Neo-Luxury foundation across the complete normal owner application. Today, Customers, Customer Workspace, Conversation, Calendar/Jobs, Money, and More now share one dark Hebrew-first operating environment. The verified Phase 1–3 commercial engine remains the source of truth; `/debug` and the other engineering routes deliberately keep their utilitarian presentation.
 
@@ -37,6 +37,10 @@ npm run dev:worker
 ```
 
 Provide a Supabase database URL, asymmetric-JWT issuer/JWKS, exact frontend origin, and public browser Auth configuration through the process environment or an ignored local `.env`. The server defaults to mock connector execution and refuses live connector mode. Build an authenticated browser bundle with `npm run build:production`; `npm run build` deliberately remains the demo build. See [Production setup](docs/PRODUCTION_SETUP.md) and [Production architecture](docs/PRODUCTION_ARCHITECTURE.md).
+
+Production data now separates durable Customer identity, acquisition Lead, and first-class Opportunity. One customer may have multiple repair, replacement, installation, or maintenance opportunities. Deterministic scoring and four bounded recovery plays persist explainable decisions plus a separate approval/action lifecycle but do not send live messages. Customer responses, opt-out, Human Takeover, booking, payment, and refunds reconcile into the same Opportunity. Revenue at risk is estimated value, booking is not cash, and actual recovered revenue requires a tenant-linked validated payment net of refunds. See [HVAC Revenue Recovery](docs/HVAC_REVENUE_RECOVERY.md).
+
+Authenticated production routes begin at `/revenue` and include `/opportunities`, `/opportunity/:id`, `/inbox`, `/bookings`, `/jobs`, `/customers`, `/customer/:id`, `/recovery`, `/connections`, and `/settings`. Legacy production aliases redirect; demo routes and debug tooling remain separate.
 
 ## Quality commands
 
@@ -85,7 +89,7 @@ The AI provider is untrusted and has no repository, network, clock, or mutation 
 
 In production mode the browser also has no repository/database access. `SupabaseAuthClient` restores and refreshes the identity session; `ProductionApiClient` attaches the short-lived token; Fastify verifies signature/issuer/audience and resolves every tenant membership before accessing `PostgresProductionStore`. Tenant-linked foreign keys, unique operation keys, and RLS add defense in depth. Server-only database, service-role, and `CLOSER_SECRET_*` values never enter Vite or API responses. A production error never reveals the deterministic demo.
 
-See [Product Bible](docs/PRODUCT_BIBLE.md), [Architecture](docs/ARCHITECTURE.md), [Revenue OS](docs/REVENUE_OS.md), [Product UX history](docs/PRODUCT_UX.md), [Phase 4 design-system history](docs/DESIGN_SYSTEM.md), [Conversation Engine](docs/CONVERSATION_ENGINE.md), [Assistant Safety](docs/ASSISTANT_SAFETY.md), [Assistant Tools](docs/ASSISTANT_TOOLS.md), and [Financial Rules](docs/FINANCIAL_RULES.md).
+See [Product Bible](docs/PRODUCT_BIBLE.md), [Architecture](docs/ARCHITECTURE.md), [Revenue OS](docs/REVENUE_OS.md), [HVAC Revenue Recovery](docs/HVAC_REVENUE_RECOVERY.md), [Product UX history](docs/PRODUCT_UX.md), [Phase 4 design-system history](docs/DESIGN_SYSTEM.md), [Conversation Engine](docs/CONVERSATION_ENGINE.md), [Assistant Safety](docs/ASSISTANT_SAFETY.md), [Assistant Tools](docs/ASSISTANT_TOOLS.md), and [Financial Rules](docs/FINANCIAL_RULES.md).
 
 ## Local data
 
@@ -105,6 +109,6 @@ Never commit `.env` files, credentials, tokens, customer exports, or production 
 
 ## Deliberate exclusions
 
-The current build does not include production AI, live WhatsApp/Meta/Instagram/email, invitation email delivery, a live payment gateway, calendar integrations, deployment, or redesigns for the engineering appointment, quote/job, and debug modules. The activation path exists, but this checkout has no Supabase/database credentials, so hosted migration, hosted sign-in, and a real PostgreSQL E2E run are not claimed. Production sends and charges remain disabled.
+The current build does not include production AI, live WhatsApp/Meta/Instagram/email, invitation email delivery, a live payment gateway, calendar integrations, deployment, or redesigns for the engineering appointment, quote/job, and debug modules. The activation path and real PostgreSQL integration suite exist. This checkout has no hosted Supabase credentials, so hosted migration and hosted sign-in are not claimed; local PostgreSQL verification is reported separately in the test report. Production sends and charges remain disabled.
 
 See [Commercial journey](docs/COMMERCIAL_JOURNEY.md) for reconciliation, closing, recovery, idempotency, action, and activity rules.

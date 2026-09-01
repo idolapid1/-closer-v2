@@ -35,6 +35,8 @@ Copy `.env.production.example` to the deployment secret manager, not to Git. Req
 
 For migrations, use the Supabase direct connection or session pooler connection from **Connect**. For a persistent Fastify process, use the direct connection where reachable or the session pooler on IPv4-only infrastructure. Include TLS as required by the supplied connection string.
 
+Migration `0003` creates `closer_api` and `closer_system` as `NOLOGIN`, `NOBYPASSRLS` roles and grants them to the database login that applies the migration. Fastify uses `SET LOCAL ROLE closer_api` for every authenticated request; the worker/webhook boundary uses `SET LOCAL ROLE closer_system`. If migrations and runtime use different database logins, a database administrator must grant the appropriate role membership to the runtime login before boot. Do not give either runtime role `BYPASSRLS`, superuser, or direct browser credentials.
+
 Never expose the database password, JWT signing secret, service-role key, webhook secret, or connector credentials through a `VITE_` variable.
 
 ## 3. Configure the browser build
@@ -62,11 +64,11 @@ npm run db:migrate
 npm run db:verify
 ```
 
-The second migration run proves the checksummed runner is repeat-safe. `db:verify` connects to the actual database and verifies migration checksums, critical tables, indexes, RLS enablement/policies, and the concurrent follow-up claim function. A missing or changed object fails the command.
+The second migration run proves the checksummed runner is repeat-safe. `db:verify` connects to the actual database and verifies migration checksums, critical tables, indexes, forced RLS, constrained runtime roles, PostgREST protection, server-only function grants, fixed function `search_path`, and the concurrent follow-up claim function. A missing or changed object fails the command.
 
 All API, worker, and database commands use `.env` only when it exists. A production secret manager may inject variables directly; a missing optional file never causes a fallback, and missing required values still fail at boot with explicit field names.
 
-`0001_production_foundation.sql` remains unchanged. `0002_production_activation.sql` adds hashed, expiring, single-use organization invitations.
+`0001_production_foundation.sql` remains unchanged. `0002_production_activation.sql` adds hashed, expiring, single-use organization invitations. `0003_supabase_security_hardening.sql` revokes direct `anon`/`authenticated` access to CLOSER tables, protects `app_users` and the migration ledger, and constrains API versus system execution. `0004_hvac_revenue_recovery.sql` adds opportunities, score snapshots, recovery policies/decisions, attribution evidence, tenant-linked indexes, forced RLS, and the same PostgREST protection. `0005_recovery_action_lifecycle.sql` adds auditable action preparation/approval state and a non-recovery booking event. `0006_conservative_booking_attribution.sql` corrects legacy booked labels conservatively. `0007_authenticated_inbound_messages.sql` grants only the constrained API role the insert needed to persist a validated inbound response; browser roles remain revoked. `0008_recovery_autonomy_enforcement.sql` corrects only unapproved historical `OBSERVE`/`SUGGEST` rows so they cannot become send-ready.
 
 ## 5. Run the two server processes
 
@@ -120,10 +122,14 @@ Use a dedicated non-production database:
 TEST_DATABASE_URL=postgresql://... npm run test:postgres
 ```
 
-The integration suite applies migrations twice, runs `db:verify`, creates two real tenants, exercises authenticated Customer → Lead → Conversation → Follow-up persistence across an API restart, attempts cross-tenant ID guessing, and removes only its generated tenant data afterward. The command refuses to use `DATABASE_URL` implicitly.
+The integration suite applies migrations twice, runs `db:verify`, creates two real tenants, exercises authenticated Customer → Lead → Conversation → Follow-up persistence across an API restart, and attempts cross-tenant ID guessing. It also runs direct SQL as the `NOBYPASSRLS` `closer_api` role to prove each user sees only their tenant, and reuses one pooled connection to prove transaction-local identity cannot leak between requests. The command removes only its generated tenant data afterward and refuses to use `DATABASE_URL` implicitly.
 
-## 10. Current activation gate
+## 10. CI and activation gate
 
-This repository environment did not provide a Supabase project, database URL, test database URL, Docker, or `psql`. Therefore the live Supabase migration, real hosted sign-in, real PostgreSQL integration test, and browser reload against that service are not claimed. Once credentials are supplied through ignored environment configuration, the commands above are the deterministic activation gate.
+`.github/workflows/ci.yml` starts PostgreSQL 16, runs the complete repository verification, applies migrations twice, verifies the real schema, runs the PostgreSQL integration suite, audits high-severity dependencies, and checks whitespace. This is the repeatable clean-install proof for every push and pull request.
+
+### Current local activation gate
+
+This checkout has been verified against a dedicated local PostgreSQL 16 database, including applying all migrations twice, live schema verification, RLS hostile reads, pooled-identity reuse, API restart persistence, and opportunity/booking reconciliation. Hosted Supabase credentials were not available in this environment, so hosted migration, hosted Auth, and a browser reload against Supabase are not claimed. Once staging credentials are supplied through ignored environment configuration, the commands above remain the deterministic activation gate.
 
 Official references: [Supabase JWT/JWKS](https://supabase.com/docs/guides/auth/jwts), [Supabase database connections](https://supabase.com/docs/guides/database/connecting-to-postgres), and [Supabase JavaScript Auth](https://supabase.com/docs/reference/javascript/auth).

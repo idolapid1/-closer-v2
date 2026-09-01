@@ -1,7 +1,12 @@
-import type { Pool, PoolClient } from 'pg';
+import type { Pool, PoolClient, QueryResult, QueryResultRow } from 'pg';
 import { ApiError } from '../application/errors.js';
 import { stableHash } from '../application/idempotency.js';
-import type { IdempotencyBeginResult, ProductionStore } from '../application/store.js';
+import type {
+  AuthenticatedStoreExecutionOptions,
+  IdempotencyBeginResult,
+  ProductionStore,
+  SystemDatabasePurpose,
+} from '../application/store.js';
 import type {
   AuthenticatedIdentity,
   BookingCreationInput,
@@ -10,6 +15,8 @@ import type {
   CopilotExecutionInput,
   CopilotExecutionResult,
   CustomerRecord,
+  CustomerResponseInput,
+  CustomerResponseResult,
   CustomerWorkspaceRecord,
   FollowUpJobRecord,
   HumanHandoffRecord,
@@ -21,6 +28,8 @@ import type {
   OrganizationInvitationRecord,
   OrganizationMembership,
   OwnerSnapshotRecord,
+  OpportunityCreationInput,
+  OpportunityCreationResult,
   PaymentCreationInput,
   PaymentCreationResult,
   PaymentRecordView,
@@ -31,9 +40,82 @@ import type {
   WebhookEndpoint,
   WebhookEventRecord,
 } from '../domain/model.js';
+import type {
+  OpportunityDetailRecord,
+  OpportunityObservation,
+  OpportunityRecord,
+  OpportunitySource,
+  RecoveryActionRecord,
+  RecoveryDecisionRecord,
+  RecoveryEvaluationRecord,
+  RevenueCommandCenterRecord,
+} from '../domain/opportunity.js';
+import {
+  RecoveryEngine,
+  recoveryActionStatus,
+  recoveryActionValidUntil,
+  recoveryDecisionExecutionState,
+  recoveryStateAfterDecision,
+} from '../application/recoveryEngine.js';
+
+type DatabaseExecutionMode = 'unscoped' | 'authenticated' | 'system';
 
 export class PostgresProductionStore implements ProductionStore {
-  constructor(private readonly pool: Pool) {}
+  constructor(
+    private readonly pool: Pool,
+    private readonly client: PoolClient | null = null,
+    private readonly executionMode: DatabaseExecutionMode = 'unscoped',
+  ) {}
+
+  async runAsAuthenticated<T>(
+    actor: AuthenticatedIdentity,
+    operation: (store: ProductionStore) => Promise<T>,
+    options: AuthenticatedStoreExecutionOptions = {},
+  ): Promise<T> {
+    this.assertRootExecutionBoundary();
+    return this.executionTransaction('authenticated', async (client, scopedStore) => {
+      await client.query('SET LOCAL ROLE closer_api');
+      let appUser = await client.query(
+        'SELECT id, email FROM public.app_users WHERE auth_subject = $1',
+        [actor.userId],
+      );
+      if (!appUser.rows[0] && options.provisionAppUser !== false) {
+        appUser = await client.query(
+          `INSERT INTO public.app_users (id, auth_subject, email, created_at, updated_at)
+           VALUES (gen_random_uuid(), $1, $2, now(), now())
+           ON CONFLICT (auth_subject) DO UPDATE
+             SET email = COALESCE(EXCLUDED.email, public.app_users.email)
+           RETURNING id, email`,
+          [actor.userId, actor.email],
+        );
+      } else if (appUser.rows[0] && actor.email && appUser.rows[0].email !== actor.email) {
+        appUser = await client.query(
+          `UPDATE public.app_users SET email = $2, updated_at = now()
+           WHERE auth_subject = $1 RETURNING id, email`,
+          [actor.userId, actor.email],
+        );
+      }
+      const appUserId = appUser.rows[0]?.id;
+      if (!appUserId) {
+        throw new ApiError(401, 'ACTOR_NOT_PROVISIONED', 'Authenticated user is not provisioned');
+      }
+      await client.query("SELECT set_config('app.user_id', $1, true)", [String(appUserId)]);
+      return operation(scopedStore);
+    });
+  }
+
+  async runAsSystem<T>(
+    purpose: SystemDatabasePurpose,
+    operation: (store: ProductionStore) => Promise<T>,
+  ): Promise<T> {
+    this.assertRootExecutionBoundary();
+    return this.executionTransaction('system', async (client, scopedStore) => {
+      await client.query('SET LOCAL ROLE closer_system');
+      await client.query("SELECT set_config('app.user_id', '', true)");
+      await client.query("SELECT set_config('app.system_purpose', $1, true)", [purpose]);
+      return operation(scopedStore);
+    });
+  }
 
   async provisionTenant(
     actor: AuthenticatedIdentity,
@@ -82,13 +164,23 @@ export class PostgresProductionStore implements ProductionStore {
          VALUES ($1,$2,$3,$4,$5)`,
         [appUserId, input.idempotencyKey, requestHash, tenantId, now],
       );
+      await client.query(
+        `INSERT INTO recovery_play_definitions (tenant_id, play_type)
+         SELECT $1, play_type::recovery_play_type
+         FROM unnest(ARRAY[
+           'MISSED_CALL_RECOVERY', 'NEW_LEAD_RECOVERY',
+           'UNSOLD_ESTIMATE_RECOVERY', 'OLD_LEAD_REACTIVATION'
+         ]) AS play_type
+         ON CONFLICT (tenant_id, play_type) DO NOTHING`,
+        [tenantId],
+      );
       await this.insertAudit(client, tenantId, actor, 'tenant.provisioned', 'tenant', tenantId, now);
       return { tenantId, role: 'owner', replayed: false };
     });
   }
 
   async listMemberships(userId: string): Promise<OrganizationMembership[]> {
-    const result = await this.pool.query(
+    const result = await this.query(
       `SELECT membership.tenant_id, tenant.name, membership.role, membership.active
        FROM organization_memberships membership
        JOIN app_users app_user ON app_user.id = membership.user_id
@@ -106,7 +198,7 @@ export class PostgresProductionStore implements ProductionStore {
   }
 
   async getMembership(userId: string, tenantId: string): Promise<OrganizationMembership | null> {
-    const result = await this.pool.query(
+    const result = await this.query(
       `SELECT membership.tenant_id, tenant.name, membership.role, membership.active
        FROM organization_memberships membership
        JOIN app_users app_user ON app_user.id = membership.user_id
@@ -126,7 +218,7 @@ export class PostgresProductionStore implements ProductionStore {
   }
 
   async listCustomers(tenantId: string): Promise<CustomerRecord[]> {
-    const result = await this.pool.query(
+    const result = await this.query(
       `SELECT id, tenant_id, display_name, phone, email, created_at
        FROM customers WHERE tenant_id = $1 ORDER BY created_at DESC`,
       [tenantId],
@@ -141,8 +233,593 @@ export class PostgresProductionStore implements ProductionStore {
     }));
   }
 
+  async listOpportunities(tenantId: string, limit = 50, offset = 0): Promise<OpportunityRecord[]> {
+    const boundedLimit = Math.min(Math.max(limit, 1), 100);
+    const boundedOffset = Math.max(offset, 0);
+    const result = await this.query(
+      `SELECT * FROM opportunities
+       WHERE tenant_id = $1
+       ORDER BY updated_at DESC, created_at DESC
+       LIMIT $2 OFFSET $3`,
+      [tenantId, boundedLimit, boundedOffset],
+    );
+    return result.rows.map(opportunityRow);
+  }
+
+  async getOpportunity(tenantId: string, opportunityId: string): Promise<OpportunityRecord | null> {
+    const result = await this.query(
+      'SELECT * FROM opportunities WHERE tenant_id = $1 AND id = $2',
+      [tenantId, opportunityId],
+    );
+    return result.rows[0] ? opportunityRow(result.rows[0]) : null;
+  }
+
+  async getOpportunityDetail(tenantId: string, opportunityId: string): Promise<OpportunityDetailRecord | null> {
+    const [opportunityResult, decisions, actions, revenue] = await Promise.all([
+      this.query(
+        `SELECT opportunity.*,
+                customer.display_name AS customer_display_name,
+                customer.phone AS customer_phone,
+                customer.email AS customer_email,
+                customer.created_at AS customer_created_at,
+                conversation.channel AS conversation_channel,
+                conversation.mode AS conversation_mode,
+                conversation.stage AS conversation_stage,
+                conversation.last_customer_message_at AS conversation_last_customer_message_at,
+                conversation.last_business_response_at AS conversation_last_business_response_at,
+                conversation.created_at AS conversation_created_at,
+                conversation.updated_at AS conversation_updated_at,
+                booking.status AS booking_status,
+                booking.start_at AS booking_start_at,
+                booking.end_at AS booking_end_at,
+                booking.total_cents AS booking_total_cents,
+                estimate.status AS estimate_status,
+                estimate.total_cents AS estimate_total_cents,
+                estimate.created_at AS estimate_created_at,
+                job.status AS job_status,
+                job.scheduled_start_at AS job_scheduled_start_at,
+                job.total_cents AS job_total_cents,
+                handoff.id AS handoff_id,
+                handoff.reason AS handoff_reason,
+                handoff.detail AS handoff_detail,
+                handoff.started_at AS handoff_started_at,
+                handoff.resolved_at AS handoff_resolved_at
+         FROM opportunities opportunity
+         JOIN customers customer
+           ON customer.tenant_id = opportunity.tenant_id AND customer.id = opportunity.customer_id
+         LEFT JOIN conversations conversation
+           ON conversation.tenant_id = opportunity.tenant_id AND conversation.id = opportunity.conversation_id
+         LEFT JOIN bookings booking
+           ON booking.tenant_id = opportunity.tenant_id AND booking.id = opportunity.booking_id
+         LEFT JOIN quotes estimate
+           ON estimate.tenant_id = opportunity.tenant_id AND estimate.id = opportunity.estimate_id
+         LEFT JOIN jobs job
+           ON job.tenant_id = opportunity.tenant_id AND job.id = opportunity.job_id
+         LEFT JOIN LATERAL (
+           SELECT item.* FROM human_handoffs item
+           WHERE item.tenant_id = opportunity.tenant_id
+             AND item.conversation_id = opportunity.conversation_id
+             AND item.resolved_at IS NULL
+           ORDER BY item.started_at DESC LIMIT 1
+         ) handoff ON true
+         WHERE opportunity.tenant_id = $1 AND opportunity.id = $2`,
+        [tenantId, opportunityId],
+      ),
+      this.query(
+        `SELECT * FROM recovery_decisions
+         WHERE tenant_id = $1 AND opportunity_id = $2
+         ORDER BY decided_at DESC`,
+        [tenantId, opportunityId],
+      ),
+      this.query(
+        `SELECT * FROM recovery_actions
+         WHERE tenant_id = $1 AND opportunity_id = $2
+         ORDER BY created_at DESC`,
+        [tenantId, opportunityId],
+      ),
+      this.query(
+        `SELECT id, tenant_id, customer_id, lead_id, conversation_id, payment_id, stage,
+                amount_cents, causation_key, occurred_at, opportunity_id, event_type,
+                attribution_type, attribution_reason
+         FROM revenue_ledger_events
+         WHERE tenant_id = $1 AND opportunity_id = $2
+         ORDER BY occurred_at, created_at, id`,
+        [tenantId, opportunityId],
+      ),
+    ]);
+    const row = opportunityResult.rows[0];
+    if (!row) return null;
+    const opportunity = opportunityRow(row);
+    return {
+      opportunity,
+      recoveryDecisions: decisions.rows.map(recoveryDecisionRow),
+      recoveryActions: actions.rows.map(recoveryActionRow),
+      revenueEvents: revenue.rows.map(revenueRow),
+      customer: {
+        id: opportunity.customerId,
+        tenantId,
+        displayName: String(row.customer_display_name),
+        phone: String(row.customer_phone),
+        email: nullableString(row.customer_email),
+        createdAt: asIso(row.customer_created_at),
+      },
+      conversation: opportunity.conversationId && row.conversation_channel
+        ? {
+            id: opportunity.conversationId,
+            tenantId,
+            customerId: opportunity.customerId,
+            leadId: opportunity.leadId ?? '',
+            channel: String(row.conversation_channel),
+            mode: row.conversation_mode as ConversationRecord['mode'],
+            stage: String(row.conversation_stage),
+            lastCustomerMessageAt: nullableIso(row.conversation_last_customer_message_at),
+            lastBusinessResponseAt: nullableIso(row.conversation_last_business_response_at),
+            createdAt: asIso(row.conversation_created_at),
+            updatedAt: asIso(row.conversation_updated_at),
+          }
+        : null,
+      booking: opportunity.bookingId && row.booking_status
+        ? {
+            id: opportunity.bookingId,
+            status: String(row.booking_status),
+            startAt: asIso(row.booking_start_at),
+            endAt: asIso(row.booking_end_at),
+            totalCents: Number(row.booking_total_cents),
+          }
+        : null,
+      estimate: opportunity.estimateId && row.estimate_status
+        ? {
+            id: opportunity.estimateId,
+            status: String(row.estimate_status),
+            totalCents: Number(row.estimate_total_cents),
+            createdAt: asIso(row.estimate_created_at),
+          }
+        : null,
+      job: opportunity.jobId && row.job_status
+        ? {
+            id: opportunity.jobId,
+            status: String(row.job_status),
+            scheduledStartAt: nullableIso(row.job_scheduled_start_at),
+            totalCents: Number(row.job_total_cents),
+          }
+        : null,
+      activeHandoff: row.handoff_id
+        ? {
+            id: String(row.handoff_id),
+            tenantId,
+            conversationId: opportunity.conversationId ?? '',
+            reason: String(row.handoff_reason),
+            detail: String(row.handoff_detail),
+            startedAt: asIso(row.handoff_started_at),
+            resolvedAt: nullableIso(row.handoff_resolved_at),
+          }
+        : null,
+    };
+  }
+
+  async getRevenueCommandCenter(tenantId: string): Promise<RevenueCommandCenterRecord> {
+    const [metrics, opportunities] = await Promise.all([
+      this.query(
+        `SELECT
+           COALESCE(SUM(revenue_attributed_cents) FILTER (WHERE attribution_type = 'RECOVERED'), 0)::bigint AS actual_recovered_revenue,
+           COALESCE(SUM(revenue_attributed_cents) FILTER (WHERE attribution_type IN ('GENERATED','RECOVERED','ASSISTED')), 0)::bigint AS influenced_revenue,
+           COALESCE(SUM(estimated_value_cents) FILTER (WHERE recovery_state IN ('RECOVERY_ACTIVE','WAITING_FOR_CUSTOMER')), 0)::bigint AS potential_recovered_revenue,
+           COALESCE(SUM(estimated_value_cents) FILTER (WHERE recovery_state IN ('AT_RISK','RECOVERY_ACTIVE','WAITING_FOR_CUSTOMER','HUMAN_REQUIRED')), 0)::bigint AS revenue_at_risk,
+           COUNT(*) FILTER (WHERE attribution_type = 'RECOVERED' AND job_id IS NOT NULL)::int AS recovered_jobs,
+           COUNT(*) FILTER (WHERE attribution_type = 'RECOVERED' AND booking_id IS NOT NULL)::int AS recovered_bookings,
+           COUNT(*) FILTER (WHERE status NOT IN ('WON','LOST','DO_NOT_CONTACT'))::int AS active_opportunities,
+           COUNT(*) FILTER (WHERE recovery_state = 'HUMAN_REQUIRED')::int AS human_required,
+           AVG(EXTRACT(EPOCH FROM (won_at - created_at)) / 3600)
+             FILTER (WHERE attribution_type = 'RECOVERED' AND won_at IS NOT NULL) AS average_recovery_hours
+         FROM opportunities WHERE tenant_id = $1`,
+        [tenantId],
+      ),
+      this.query(
+        `SELECT * FROM opportunities
+         WHERE tenant_id = $1
+           AND recovery_state IN ('AT_RISK','RECOVERY_ACTIVE','WAITING_FOR_CUSTOMER','HUMAN_REQUIRED')
+         ORDER BY CASE WHEN recovery_state = 'HUMAN_REQUIRED' THEN 0 ELSE 1 END,
+                  recovery_score DESC, estimated_value_cents DESC NULLS LAST
+         LIMIT 100`,
+        [tenantId],
+      ),
+    ]);
+    const row = metrics.rows[0] ?? {};
+    return {
+      actualRecoveredRevenueCents: Number(row.actual_recovered_revenue ?? 0),
+      influencedRevenueCents: Number(row.influenced_revenue ?? 0),
+      potentialRecoveredRevenueCents: Number(row.potential_recovered_revenue ?? 0),
+      revenueAtRiskCents: Number(row.revenue_at_risk ?? 0),
+      recoveredJobs: Number(row.recovered_jobs ?? 0),
+      recoveredBookings: Number(row.recovered_bookings ?? 0),
+      activeOpportunities: Number(row.active_opportunities ?? 0),
+      humanInterventionRequired: Number(row.human_required ?? 0),
+      averageRecoveryTimeHours: row.average_recovery_hours === null || row.average_recovery_hours === undefined
+        ? null
+        : Number(row.average_recovery_hours),
+      opportunitiesAtRisk: opportunities.rows.map(opportunityRow),
+    };
+  }
+
+  async evaluateOpportunityRecovery(
+    tenantId: string,
+    opportunityId: string,
+    actor: AuthenticatedIdentity,
+    idempotencyKey: string,
+    now: string,
+  ): Promise<RecoveryEvaluationRecord> {
+    return this.transaction(async (client) => {
+      const existing = await client.query(
+        'SELECT * FROM recovery_decisions WHERE tenant_id = $1 AND idempotency_key = $2',
+        [tenantId, idempotencyKey],
+      );
+      if (existing.rows[0]) {
+        if (String(existing.rows[0].opportunity_id) !== opportunityId) {
+          throw new ApiError(409, 'IDEMPOTENCY_CONFLICT', 'Recovery key was reused for another opportunity');
+        }
+        const action = await client.query(
+          'SELECT * FROM recovery_actions WHERE tenant_id = $1 AND decision_id = $2',
+          [tenantId, existing.rows[0].id],
+        );
+        if (!action.rows[0]) throw new ApiError(409, 'RECOVERY_ACTION_MISSING', 'Recovery action is missing');
+        return { decision: recoveryDecisionRow(existing.rows[0]), action: recoveryActionRow(action.rows[0]) };
+      }
+      const context = await client.query(
+        `SELECT opportunity.*,
+                customer.opted_out, customer.operational_allowed,
+                conversation.mode AS conversation_mode,
+                conversation.last_customer_message_at AS conversation_customer_activity,
+                conversation.last_business_response_at AS conversation_business_activity,
+                COALESCE(follow_up.attempt_count, 0)::int AS follow_up_attempts,
+                COALESCE(estimate.view_count, 0)::int AS estimate_view_count,
+                estimate.created_at AS estimate_created_at,
+                COALESCE(other_opportunity.active_count, 0)::int > 0 AS has_other_active_opportunity,
+                CASE
+                  WHEN recovery_policy.contact_window_start IS NULL THEN false
+                  ELSE $3::timestamptz::time >= recovery_policy.contact_window_start
+                    AND $3::timestamptz::time < recovery_policy.contact_window_end
+                END AS within_contact_window
+         FROM opportunities opportunity
+         JOIN customers customer
+           ON customer.tenant_id = opportunity.tenant_id AND customer.id = opportunity.customer_id
+         LEFT JOIN conversations conversation
+           ON conversation.tenant_id = opportunity.tenant_id AND conversation.id = opportunity.conversation_id
+         LEFT JOIN LATERAL (
+           SELECT SUM(attempt_count)::int AS attempt_count
+           FROM follow_up_jobs item
+           WHERE item.tenant_id = opportunity.tenant_id
+             AND item.conversation_id = opportunity.conversation_id
+         ) follow_up ON true
+         LEFT JOIN LATERAL (
+           SELECT item.created_at,
+                  CASE WHEN item.status = 'VIEWED' THEN 1 ELSE 0 END AS view_count
+           FROM quotes item
+           WHERE item.tenant_id = opportunity.tenant_id AND item.id = opportunity.estimate_id
+         ) estimate ON true
+         LEFT JOIN LATERAL (
+           SELECT COUNT(*)::int AS active_count
+           FROM opportunities item
+           WHERE item.tenant_id = opportunity.tenant_id
+             AND item.customer_id = opportunity.customer_id
+             AND item.id <> opportunity.id
+             AND item.status NOT IN ('WON','LOST','DO_NOT_CONTACT')
+         ) other_opportunity ON true
+         LEFT JOIN LATERAL (
+           SELECT MIN(contact_window_start) AS contact_window_start,
+                  MAX(contact_window_end) AS contact_window_end
+           FROM recovery_play_definitions item
+           WHERE item.tenant_id = opportunity.tenant_id AND item.enabled
+         ) recovery_policy ON true
+         WHERE opportunity.tenant_id = $1 AND opportunity.id = $2
+         FOR UPDATE OF opportunity`,
+        [tenantId, opportunityId, now],
+      );
+      const row = context.rows[0];
+      if (!row) throw new ApiError(404, 'RESOURCE_NOT_FOUND', 'The requested resource was not found');
+      const opportunity = opportunityRow(row);
+      const currentAction = await client.query(
+        `SELECT * FROM recovery_actions
+         WHERE tenant_id = $1 AND opportunity_id = $2
+           AND status IN ('PENDING','READY','WAITING_APPROVAL','EXECUTING','WAITING_CUSTOMER','HUMAN_REQUIRED')
+         ORDER BY created_at DESC LIMIT 1
+         FOR UPDATE`,
+        [tenantId, opportunityId],
+      );
+      if (currentAction.rows[0]) {
+        const action = recoveryActionRow(currentAction.rows[0]);
+        if (action.validUntil && new Date(action.validUntil).getTime() <= new Date(now).getTime()) {
+          await client.query(
+            `UPDATE recovery_actions
+             SET status = 'CANCELLED', cancelled_at = $3, updated_at = $3
+             WHERE tenant_id = $1 AND id = $2`,
+            [tenantId, action.id, now],
+          );
+        } else {
+          const currentDecision = await client.query(
+            'SELECT * FROM recovery_decisions WHERE tenant_id = $1 AND id = $2',
+            [tenantId, action.decisionId],
+          );
+          if (!currentDecision.rows[0]) {
+            throw new ApiError(409, 'RECOVERY_DECISION_MISSING', 'Recovery decision is missing');
+          }
+          return { decision: recoveryDecisionRow(currentDecision.rows[0]), action };
+        }
+      }
+      const observation = opportunityObservationRow(row, opportunity, now);
+      const decision = new RecoveryEngine().evaluate({ opportunity, observation, operationKey: idempotencyKey });
+      const executionState = recoveryDecisionExecutionState(opportunity, decision);
+      const recoveryState = recoveryStateAfterDecision(opportunity, decision);
+      const reasonCodes = [...new Set([
+        ...decision.scores.intent.reasonCodes,
+        ...decision.scores.revenue.reasonCodes,
+        ...decision.scores.recovery.reasonCodes,
+        ...decision.scores.urgency.reasonCodes,
+      ])];
+      const inserted = await client.query(
+        `INSERT INTO recovery_decisions (
+           tenant_id, opportunity_id, play_type, eligible, suppression_reason,
+           next_action_kind, next_action_label, action_channel, requires_approval, due_at,
+           policy_version, score_version, intent_score, revenue_score, recovery_score,
+           urgency_score, reason_codes, execution_state, idempotency_key, decided_at
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+         RETURNING *`,
+        [tenantId, opportunityId, decision.playType, decision.eligible, decision.suppressionReason,
+          decision.nextBestAction.kind, decision.nextBestAction.label, decision.nextBestAction.channel,
+          decision.nextBestAction.requiresApproval, decision.nextBestAction.dueAt,
+          decision.policyVersion, decision.scores.recovery.version, decision.scores.intent.value,
+          decision.scores.revenue.value, decision.scores.recovery.value, decision.scores.urgency.value,
+          reasonCodes, executionState, idempotencyKey, now],
+      );
+      const actionStatus = recoveryActionStatus(opportunity, decision);
+      const actionInserted = await client.query(
+        `INSERT INTO recovery_actions (
+           tenant_id, opportunity_id, decision_id, action_kind, channel, status,
+           requires_approval, requested_by, idempotency_key, valid_until,
+           delivery_state, created_at, updated_at
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,'POLICY',$8,$9,'LIVE_DISABLED',$10,$10)
+         RETURNING *`,
+        [tenantId, opportunityId, inserted.rows[0]?.id, decision.nextBestAction.kind,
+          decision.nextBestAction.channel, actionStatus, decision.nextBestAction.requiresApproval,
+          `${idempotencyKey}:action`, recoveryActionValidUntil(decision), now],
+      );
+      await client.query(
+        `UPDATE opportunities SET
+           intent_score = $3, revenue_score = $4, recovery_score = $5, urgency_score = $6,
+           score_version = $7, score_reason_codes = $8, recovery_state = $9,
+           next_action_at = $10, updated_at = $11
+         WHERE tenant_id = $1 AND id = $2`,
+        [tenantId, opportunityId, decision.scores.intent.value, decision.scores.revenue.value,
+          decision.scores.recovery.value, decision.scores.urgency.value,
+          decision.scores.recovery.version, reasonCodes, recoveryState,
+          decision.nextBestAction.dueAt, now],
+      );
+      await client.query(
+        `INSERT INTO opportunity_score_snapshots (
+           tenant_id, opportunity_id, intent_score, revenue_score, recovery_score,
+           urgency_score, score_version, reason_codes, explanation, causation_key, created_at
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+        [tenantId, opportunityId, decision.scores.intent.value, decision.scores.revenue.value,
+          decision.scores.recovery.value, decision.scores.urgency.value,
+          decision.scores.recovery.version, reasonCodes,
+          [decision.scores.intent.explanation, decision.scores.revenue.explanation,
+            decision.scores.recovery.explanation, decision.scores.urgency.explanation].join(' | '),
+          idempotencyKey, now],
+      );
+      await this.insertAudit(client, tenantId, actor, 'opportunity.recovery_evaluated', 'opportunity', opportunityId, now);
+      return {
+        decision: recoveryDecisionRow(inserted.rows[0]),
+        action: recoveryActionRow(actionInserted.rows[0]),
+      };
+    });
+  }
+
+  async approveRecoveryAction(
+    tenantId: string,
+    opportunityId: string,
+    actionId: string,
+    actor: AuthenticatedIdentity,
+    now: string,
+  ): Promise<RecoveryActionRecord> {
+    return this.transaction(async (client) => {
+      const result = await client.query(
+        `SELECT * FROM recovery_actions
+         WHERE tenant_id = $1 AND opportunity_id = $2 AND id = $3
+         FOR UPDATE`,
+        [tenantId, opportunityId, actionId],
+      );
+      const row = result.rows[0];
+      if (!row) throw new ApiError(404, 'RESOURCE_NOT_FOUND', 'The requested resource was not found');
+      if (row.status === 'READY' && row.approved_at) return recoveryActionRow(row);
+      if (row.status !== 'WAITING_APPROVAL') {
+        throw new ApiError(409, 'RECOVERY_ACTION_NOT_APPROVABLE', 'Recovery action is not waiting for approval');
+      }
+      if (row.valid_until && new Date(row.valid_until).getTime() <= new Date(now).getTime()) {
+        await client.query(
+          `UPDATE recovery_actions
+           SET status = 'CANCELLED', cancelled_at = $4, updated_at = $4
+           WHERE tenant_id = $1 AND opportunity_id = $2 AND id = $3`,
+          [tenantId, opportunityId, actionId, now],
+        );
+        throw new ApiError(409, 'RECOVERY_ACTION_EXPIRED', 'Recovery action has expired and must be recalculated');
+      }
+      const updated = await client.query(
+        `UPDATE recovery_actions
+         SET status = 'READY',
+             approved_by_user_id = NULLIF(current_setting('app.user_id', true), '')::uuid,
+             approved_at = $4, updated_at = $4
+         WHERE tenant_id = $1 AND opportunity_id = $2 AND id = $3
+         RETURNING *`,
+        [tenantId, opportunityId, actionId, now],
+      );
+      await client.query(
+        `UPDATE opportunities
+         SET recovery_state = 'RECOVERY_ACTIVE', next_action_at = $3, updated_at = $3
+         WHERE tenant_id = $1 AND id = $2 AND status NOT IN ('WON', 'DO_NOT_CONTACT')`,
+        [tenantId, opportunityId, now],
+      );
+      await this.insertAudit(client, tenantId, actor, 'recovery_action.approved', 'recovery_action', actionId, now);
+      return recoveryActionRow(updated.rows[0]);
+    });
+  }
+
+  async recordCustomerOptOut(
+    tenantId: string,
+    customerId: string,
+    actor: AuthenticatedIdentity,
+    now: string,
+  ): Promise<{ customerId: string; stoppedOpportunities: number; cancelledFollowUps: number }> {
+    return this.transaction(async (client) => {
+      const customer = await client.query(
+        `UPDATE customers
+         SET opted_out = true, operational_allowed = false, marketing_allowed = false, updated_at = $3
+         WHERE tenant_id = $1 AND id = $2
+         RETURNING id`,
+        [tenantId, customerId, now],
+      );
+      if (!customer.rows[0]) throw new ApiError(404, 'RESOURCE_NOT_FOUND', 'The requested resource was not found');
+      const opportunities = await client.query(
+        `UPDATE opportunities
+         SET status = 'DO_NOT_CONTACT', recovery_state = 'STOPPED', next_action_at = NULL, updated_at = $3
+         WHERE tenant_id = $1 AND customer_id = $2
+           AND status NOT IN ('WON', 'DO_NOT_CONTACT')
+         RETURNING id, conversation_id`,
+        [tenantId, customerId, now],
+      );
+      const opportunityIds = opportunities.rows.map((row) => String(row.id));
+      if (opportunityIds.length > 0) {
+        await client.query(
+          `UPDATE recovery_actions
+           SET status = 'CANCELLED', cancelled_at = $3, updated_at = $3
+           WHERE tenant_id = $1 AND opportunity_id = ANY($2::uuid[])
+             AND status IN ('PENDING','READY','WAITING_APPROVAL','EXECUTING','WAITING_CUSTOMER','HUMAN_REQUIRED')`,
+          [tenantId, opportunityIds, now],
+        );
+      }
+      const followUps = await client.query(
+        `UPDATE follow_up_jobs
+         SET status = 'cancelled', cancelled_at = $3, stop_reason = 'CONSENT_BLOCKED',
+             lease_owner = NULL, lease_expires_at = NULL, updated_at = $3
+         WHERE tenant_id = $1 AND customer_id = $2
+           AND status IN ('scheduled','failed','leased')
+         RETURNING id`,
+        [tenantId, customerId, now],
+      );
+      await this.insertAudit(client, tenantId, actor, 'customer.opted_out', 'customer', customerId, now);
+      return {
+        customerId,
+        stoppedOpportunities: opportunities.rowCount ?? 0,
+        cancelledFollowUps: followUps.rowCount ?? 0,
+      };
+    });
+  }
+
+  async recordCustomerResponse(
+    tenantId: string,
+    opportunityId: string,
+    actor: AuthenticatedIdentity,
+    input: CustomerResponseInput,
+    now: string,
+  ): Promise<CustomerResponseResult> {
+    return this.transaction(async (client) => {
+      const opportunity = await client.query(
+        `SELECT id, conversation_id, status
+         FROM opportunities
+         WHERE tenant_id = $1 AND id = $2
+         FOR UPDATE`,
+        [tenantId, opportunityId],
+      );
+      const row = opportunity.rows[0];
+      if (!row || !row.conversation_id) {
+        throw new ApiError(404, 'RESOURCE_NOT_FOUND', 'The requested resource was not found');
+      }
+      if (row.status === 'DO_NOT_CONTACT') {
+        throw new ApiError(409, 'OPPORTUNITY_CONTACT_STOPPED', 'Explicit re-consent is required before continuing');
+      }
+      const inserted = await client.query(
+        `INSERT INTO messages (
+           tenant_id, conversation_id, direction, author, purpose, body,
+           provider_message_id, sent_at, created_at, updated_at
+         ) VALUES ($1,$2,'INBOUND','CUSTOMER','OPERATIONAL',$3,$4,$5,$5,$5)
+         ON CONFLICT (tenant_id, provider_message_id) DO NOTHING
+         RETURNING id`,
+        [tenantId, row.conversation_id, input.body, input.providerMessageId, now],
+      );
+      if (!inserted.rows[0]) {
+        const existing = await client.query(
+          `SELECT message.id, message.conversation_id, message.body, opportunity.id AS opportunity_id
+           FROM messages message
+           LEFT JOIN opportunities opportunity
+             ON opportunity.tenant_id = message.tenant_id
+             AND opportunity.conversation_id = message.conversation_id
+           WHERE message.tenant_id = $1 AND message.provider_message_id = $2`,
+          [tenantId, input.providerMessageId],
+        );
+        const existingRow = existing.rows[0];
+        if (!existingRow
+          || String(existingRow.opportunity_id) !== opportunityId
+          || String(existingRow.body) !== input.body) {
+          throw new ApiError(409, 'PROVIDER_MESSAGE_CONFLICT', 'Provider message ID was reused with different facts');
+        }
+        return {
+          messageId: String(existingRow.id),
+          opportunityId,
+          conversationId: String(existingRow.conversation_id),
+          providerReplay: true,
+        };
+      }
+      await client.query(
+        `UPDATE conversations
+         SET last_customer_message_at = $3, updated_at = $3
+         WHERE tenant_id = $1 AND id = $2`,
+        [tenantId, row.conversation_id, now],
+      );
+      await client.query(
+        `UPDATE opportunities
+         SET status = CASE WHEN status IN ('NEW','CONTACTING') THEN 'ENGAGED'::opportunity_status ELSE status END,
+             recovery_state = CASE
+               WHEN recovery_state = 'HUMAN_REQUIRED' THEN recovery_state
+               ELSE 'NOT_AT_RISK'::recovery_state
+             END,
+             last_customer_activity_at = $3,
+             next_action_at = $3,
+             updated_at = $3
+         WHERE tenant_id = $1 AND id = $2`,
+        [tenantId, opportunityId, now],
+      );
+      await client.query(
+        `UPDATE follow_up_jobs
+         SET status = 'cancelled', stop_reason = 'CUSTOMER_REPLIED', last_response_at = $3,
+             cancelled_at = $3, lease_owner = NULL, lease_expires_at = NULL, updated_at = $3
+         WHERE tenant_id = $1 AND conversation_id = $2
+           AND status IN ('scheduled','failed','leased')`,
+        [tenantId, row.conversation_id, now],
+      );
+      await client.query(
+        `UPDATE recovery_actions
+         SET status = CASE
+               WHEN status = 'WAITING_CUSTOMER' THEN 'COMPLETED'::recovery_action_status
+               ELSE 'CANCELLED'::recovery_action_status
+             END,
+             completed_at = CASE WHEN status = 'WAITING_CUSTOMER' THEN COALESCE(completed_at, $3) ELSE completed_at END,
+             cancelled_at = CASE WHEN status = 'WAITING_CUSTOMER' THEN cancelled_at ELSE $3 END,
+             updated_at = $3
+         WHERE tenant_id = $1 AND opportunity_id = $2
+           AND status IN ('PENDING','READY','WAITING_APPROVAL','EXECUTING','WAITING_CUSTOMER')`,
+        [tenantId, opportunityId, now],
+      );
+      const messageId = String(inserted.rows[0].id);
+      await this.insertAudit(client, tenantId, actor, 'customer.response_recorded', 'message', messageId, now);
+      return {
+        messageId,
+        opportunityId,
+        conversationId: String(row.conversation_id),
+        providerReplay: false,
+      };
+    });
+  }
+
   async listConversations(tenantId: string): Promise<ConversationRecord[]> {
-    const result = await this.pool.query(
+    const result = await this.query(
       `SELECT id, tenant_id, customer_id, lead_id, channel, mode, stage,
               last_customer_message_at, last_business_response_at, created_at, updated_at
        FROM conversations WHERE tenant_id = $1 ORDER BY created_at DESC`,
@@ -152,7 +829,7 @@ export class PostgresProductionStore implements ProductionStore {
   }
 
   async listFollowUps(tenantId: string): Promise<FollowUpJobRecord[]> {
-    const result = await this.pool.query(
+    const result = await this.query(
       `SELECT * FROM follow_up_jobs
        WHERE tenant_id = $1 ORDER BY COALESCE(retry_at, due_at), created_at`,
       [tenantId],
@@ -161,14 +838,14 @@ export class PostgresProductionStore implements ProductionStore {
   }
 
   async getCustomerWorkspace(tenantId: string, customerId: string): Promise<CustomerWorkspaceRecord | null> {
-    const customerResult = await this.pool.query(
+    const customerResult = await this.query(
       `SELECT id, tenant_id, display_name, phone, email, created_at
        FROM customers WHERE tenant_id = $1 AND id = $2`,
       [tenantId, customerId],
     );
     const customerRow = customerResult.rows[0];
     if (!customerRow) return null;
-    const leadResult = await this.pool.query(
+    const leadResult = await this.query(
       `SELECT id, tenant_id, customer_id, conversation_id, service_id, source, workflow_type,
               sales_state, status, priority, created_at, updated_at
        FROM leads WHERE tenant_id = $1 AND customer_id = $2
@@ -177,7 +854,7 @@ export class PostgresProductionStore implements ProductionStore {
     );
     const lead = leadResult.rows[0] ? leadRow(leadResult.rows[0]) : null;
     const conversationResult = lead?.conversationId
-      ? await this.pool.query(
+      ? await this.query(
         `SELECT id, tenant_id, customer_id, lead_id, channel, mode, stage,
                 last_customer_message_at, last_business_response_at, created_at, updated_at
          FROM conversations WHERE tenant_id = $1 AND id = $2`,
@@ -185,12 +862,12 @@ export class PostgresProductionStore implements ProductionStore {
       )
       : { rows: [] as Record<string, unknown>[] };
     const conversation = conversationResult.rows[0] ? conversationRow(conversationResult.rows[0]) : null;
-    const followUps = await this.pool.query(
+    const followUps = await this.query(
       'SELECT * FROM follow_up_jobs WHERE tenant_id = $1 AND customer_id = $2 ORDER BY created_at DESC',
       [tenantId, customerId],
     );
     const handoff = conversation
-      ? await this.pool.query(
+      ? await this.query(
         `SELECT id, tenant_id, conversation_id, reason, detail, started_at, resolved_at
          FROM human_handoffs
          WHERE tenant_id = $1 AND conversation_id = $2 AND resolved_at IS NULL
@@ -198,14 +875,21 @@ export class PostgresProductionStore implements ProductionStore {
         [tenantId, conversation.id],
       )
       : { rows: [] as Record<string, unknown>[] };
-    const payments = await this.pool.query(
+    const payments = await this.query(
       `SELECT id, tenant_id, customer_id, lead_id, conversation_id, reference_type,
               reference_id, kind, status, amount_cents, original_payment_id, collected_at
        FROM payments WHERE tenant_id = $1 AND customer_id = $2 ORDER BY collected_at`,
       [tenantId, customerId],
     );
+    const opportunities = await this.query(
+      `SELECT * FROM opportunities
+       WHERE tenant_id = $1 AND customer_id = $2
+       ORDER BY created_at DESC`,
+      [tenantId, customerId],
+    );
     return {
       customer: customerRecordRow(customerRow),
+      opportunities: opportunities.rows.map(opportunityRow),
       lead,
       conversation,
       followUps: followUps.rows.map(followUpRow),
@@ -220,7 +904,7 @@ export class PostgresProductionStore implements ProductionStore {
       this.listConversations(tenantId),
       this.listFollowUps(tenantId),
       this.getRevenueSummary(tenantId),
-      this.pool.query(
+      this.query(
         `SELECT id, tenant_id, conversation_id, reason, detail, started_at, resolved_at
          FROM human_handoffs WHERE tenant_id = $1 AND resolved_at IS NULL ORDER BY started_at`,
         [tenantId],
@@ -236,7 +920,7 @@ export class PostgresProductionStore implements ProductionStore {
   }
 
   async getRevenueSummary(tenantId: string): Promise<RevenueSummary> {
-    const result = await this.pool.query(
+    const result = await this.query(
       `SELECT stage, COALESCE(SUM(amount_cents), 0)::bigint AS amount_cents
        FROM revenue_ledger_events WHERE tenant_id = $1 GROUP BY stage`,
       [tenantId],
@@ -263,7 +947,7 @@ export class PostgresProductionStore implements ProductionStore {
   }
 
   async listConnectorConfigurations(tenantId: string): Promise<ConnectorConfigurationView[]> {
-    const result = await this.pool.query(
+    const result = await this.query(
       `SELECT id, tenant_id, provider, enabled, execution_mode, webhook_endpoint_id,
               (credential_secret_reference IS NOT NULL) AS secret_configured
        FROM connector_configurations WHERE tenant_id = $1 ORDER BY provider`,
@@ -431,8 +1115,29 @@ export class PostgresProductionStore implements ProductionStore {
       );
       await client.query(
         `UPDATE follow_up_jobs
-         SET status = 'cancelled', cancelled_at = $3, stop_reason = 'HUMAN_TAKEOVER', updated_at = $3
-         WHERE tenant_id = $1 AND conversation_id = $2 AND status IN ('scheduled','failed')`,
+         SET status = 'cancelled', cancelled_at = $3, stop_reason = 'HUMAN_TAKEOVER',
+             lease_owner = NULL, lease_expires_at = NULL, updated_at = $3
+         WHERE tenant_id = $1 AND conversation_id = $2 AND status IN ('scheduled','failed','leased')`,
+        [tenantId, conversationId, now],
+      );
+      await client.query(
+        `UPDATE opportunities
+         SET recovery_state = 'HUMAN_REQUIRED',
+             assigned_human_id = NULLIF(current_setting('app.user_id', true), '')::uuid,
+             next_action_at = $3, updated_at = $3
+         WHERE tenant_id = $1 AND conversation_id = $2
+           AND status NOT IN ('WON', 'DO_NOT_CONTACT')`,
+        [tenantId, conversationId, now],
+      );
+      await client.query(
+        `UPDATE recovery_actions action
+         SET status = 'CANCELLED', cancelled_at = $3, updated_at = $3
+         FROM opportunities opportunity
+         WHERE action.tenant_id = $1
+           AND action.tenant_id = opportunity.tenant_id
+           AND action.opportunity_id = opportunity.id
+           AND opportunity.conversation_id = $2
+           AND action.status IN ('PENDING','READY','WAITING_APPROVAL','EXECUTING','WAITING_CUSTOMER')`,
         [tenantId, conversationId, now],
       );
       await this.insertAudit(client, tenantId, actor, 'handoff.started', 'conversation', conversationId, now);
@@ -464,6 +1169,26 @@ export class PostgresProductionStore implements ProductionStore {
       await client.query(
         `UPDATE conversations SET mode = 'AI_ACTIVE', automation_enabled = true, updated_at = $3
          WHERE tenant_id = $1 AND id = $2`,
+        [tenantId, conversationId, now],
+      );
+      await client.query(
+        `UPDATE opportunities
+         SET recovery_state = 'AT_RISK', assigned_human_id = NULL,
+             next_action_at = $3, updated_at = $3
+         WHERE tenant_id = $1 AND conversation_id = $2
+           AND recovery_state = 'HUMAN_REQUIRED'
+           AND status NOT IN ('WON', 'DO_NOT_CONTACT')`,
+        [tenantId, conversationId, now],
+      );
+      await client.query(
+        `UPDATE recovery_actions action
+         SET status = 'CANCELLED', cancelled_at = $3, updated_at = $3
+         FROM opportunities opportunity
+         WHERE action.tenant_id = $1
+           AND action.tenant_id = opportunity.tenant_id
+           AND action.opportunity_id = opportunity.id
+           AND opportunity.conversation_id = $2
+           AND action.status = 'HUMAN_REQUIRED'`,
         [tenantId, conversationId, now],
       );
       await this.insertAudit(client, tenantId, actor, 'handoff.resumed', 'conversation', conversationId, now);
@@ -509,7 +1234,7 @@ export class PostgresProductionStore implements ProductionStore {
     response: unknown,
     now: string,
   ): Promise<void> {
-    await this.pool.query(
+    await this.query(
       `UPDATE idempotency_records
        SET status = 'completed', response_json = $4, completed_at = $5
        WHERE tenant_id = $1 AND scope = $2 AND idempotency_key = $3`,
@@ -518,7 +1243,7 @@ export class PostgresProductionStore implements ProductionStore {
   }
 
   async abandonIdempotency(tenantId: string, scope: string, key: string): Promise<void> {
-    await this.pool.query(
+    await this.query(
       `DELETE FROM idempotency_records
        WHERE tenant_id = $1 AND scope = $2 AND idempotency_key = $3 AND status = 'started'`,
       [tenantId, scope, key],
@@ -557,8 +1282,22 @@ export class PostgresProductionStore implements ProductionStore {
         'UPDATE leads SET conversation_id = $3, updated_at = $4 WHERE tenant_id = $1 AND id = $2',
         [tenantId, leadId, conversationId, now],
       );
+      const opportunity = await client.query(
+        `INSERT INTO opportunities (
+           tenant_id, customer_id, lead_id, conversation_id, source, opportunity_type,
+           estimated_value_cents, autonomy_level, recovery_state, next_action_at,
+           created_at, updated_at
+         ) VALUES (
+           $1,$2,$3,$4,$5,$6,$7,$8,'AT_RISK',$9,$9,$9
+         ) RETURNING id`,
+        [tenantId, customerId, leadId, conversationId,
+          normalizeOpportunitySource(input.lead.source), input.lead.opportunityType ?? 'OTHER',
+          input.lead.estimatedValueCents ?? null, input.lead.autonomyLevel ?? 'SUGGEST', now],
+      );
+      const opportunityId = String(opportunity.rows[0]?.id);
       await this.insertAudit(client, tenantId, actor, 'journey.created', 'lead', leadId, now);
-      return { customerId, leadId, conversationId, replayed: false };
+      await this.insertAudit(client, tenantId, actor, 'opportunity.created', 'opportunity', opportunityId, now);
+      return { customerId, leadId, conversationId, opportunityId, replayed: false };
     });
   }
 
@@ -570,11 +1309,31 @@ export class PostgresProductionStore implements ProductionStore {
   ): Promise<{ bookingId: string }> {
     return this.transaction(async (client) => {
       await this.assertJourneyContext(client, tenantId, input.customerId, input.leadId);
-      const service = await client.query(
-        'SELECT id FROM services WHERE tenant_id = $1 AND id = $2 AND active',
-        [tenantId, input.serviceId],
+      const opportunity = await client.query(
+        `SELECT id, conversation_id, recovery_state, status
+         FROM opportunities
+         WHERE tenant_id = $1 AND lead_id = $2
+         FOR UPDATE`,
+        [tenantId, input.leadId],
       );
-      if (service.rowCount !== 1) throw new ApiError(422, 'INVALID_SERVICE', 'Service is not available');
+      if (opportunity.rowCount !== 1) {
+        throw new ApiError(422, 'INVALID_OPPORTUNITY_CONTEXT', 'Booking has no commercial opportunity');
+      }
+      if (!['NEW', 'CONTACTING', 'ENGAGED', 'QUALIFIED'].includes(String(opportunity.rows[0]?.status))) {
+        throw new ApiError(409, 'OPPORTUNITY_NOT_BOOKABLE', 'Opportunity is not in a bookable state');
+      }
+      const service = await client.query(
+        `SELECT service.id
+         FROM services service
+         JOIN leads lead ON lead.tenant_id = service.tenant_id AND lead.id = $3
+         WHERE service.tenant_id = $1 AND service.id = $2 AND service.active
+           AND service.workflow_type = 'APPOINTMENT_SERVICE'
+           AND lead.workflow_type = 'APPOINTMENT_SERVICE'`,
+        [tenantId, input.serviceId, input.leadId],
+      );
+      if (service.rowCount !== 1) {
+        throw new ApiError(422, 'INVALID_BOOKING_WORKFLOW', 'Booking requires an active appointment service');
+      }
       const overlap = await client.query(
         `SELECT id FROM bookings
          WHERE tenant_id = $1 AND staff_user_id = $2 AND status <> 'CANCELLED'
@@ -593,8 +1352,103 @@ export class PostgresProductionStore implements ProductionStore {
           input.idempotencyKey, now],
       );
       const bookingId = String(result.rows[0]?.id);
+      const opportunityId = String(opportunity.rows[0]?.id);
+      const conversationId = String(opportunity.rows[0]?.conversation_id);
+      const wasAtRisk = ['AT_RISK', 'RECOVERY_ACTIVE', 'WAITING_FOR_CUSTOMER'].includes(
+        String(opportunity.rows[0]?.recovery_state),
+      );
+      const recoveryEvidence = await client.query(
+        `SELECT status FROM recovery_actions
+         WHERE tenant_id = $1 AND opportunity_id = $2
+           AND status NOT IN ('FAILED','SUPPRESSED','CANCELLED','HUMAN_REQUIRED')
+         ORDER BY created_at DESC LIMIT 1`,
+        [tenantId, opportunityId],
+      );
+      const recoveryActionStatusValue = recoveryEvidence.rows[0]?.status
+        ? String(recoveryEvidence.rows[0].status)
+        : null;
+      const attributionType = ['COMPLETED', 'WAITING_CUSTOMER'].includes(recoveryActionStatusValue ?? '')
+        ? 'RECOVERED'
+        : recoveryActionStatusValue ? 'ASSISTED' : 'ORGANIC';
+      const attributionReason = attributionType === 'RECOVERED'
+        ? 'VALIDATED_RECOVERY_ACTION_PRECEDED_BOOKING'
+        : attributionType === 'ASSISTED'
+          ? 'CLOSER_PREPARED_RECOVERY_BEFORE_BOOKING'
+          : 'NO_MATERIAL_CLOSER_RECOVERY_EVIDENCE';
+      await client.query(
+        `UPDATE opportunities
+         SET booking_id = $3, status = 'BOOKED',
+             recovery_state = $4::recovery_state, next_action_at = NULL,
+             attribution_type = $5::revenue_attribution_type,
+             attribution_reason = $6,
+             updated_at = $7
+         WHERE tenant_id = $1 AND id = $2`,
+        [tenantId, opportunityId, bookingId, wasAtRisk ? 'RECOVERED' : 'NOT_AT_RISK',
+          attributionType, attributionReason, now],
+      );
+      await client.query(
+        `INSERT INTO revenue_ledger_events (
+           tenant_id, customer_id, lead_id, conversation_id, payment_id, stage,
+           amount_cents, causation_key, occurred_at, opportunity_id, event_type,
+           attribution_type, attribution_reason
+         ) VALUES (
+           $1,$2,$3,$4,NULL,'booked',$5,$6,$7,$8,$9,$10,$11
+         ) ON CONFLICT (tenant_id, causation_key) DO NOTHING`,
+        [tenantId, input.customerId, input.leadId, conversationId, input.totalCents,
+          `booking:${bookingId}`, now, opportunityId,
+          attributionType === 'RECOVERED' ? 'BOOKING_RECOVERED' : 'BOOKING_CREATED',
+          attributionType, attributionReason],
+      );
       await this.insertAudit(client, tenantId, actor, 'booking.created', 'booking', bookingId, now);
       return { bookingId };
+    });
+  }
+
+  async createOpportunity(
+    tenantId: string,
+    customerId: string,
+    actor: AuthenticatedIdentity,
+    input: OpportunityCreationInput,
+    now: string,
+  ): Promise<OpportunityCreationResult> {
+    return this.transaction(async (client) => {
+      await client.query('SET CONSTRAINTS ALL DEFERRED');
+      const customer = await client.query(
+        'SELECT id FROM customers WHERE tenant_id = $1 AND id = $2 FOR UPDATE',
+        [tenantId, customerId],
+      );
+      if (customer.rowCount !== 1) throw new ApiError(404, 'RESOURCE_NOT_FOUND', 'The requested resource was not found');
+      const lead = await client.query(
+        `INSERT INTO leads (
+           tenant_id, customer_id, source, workflow_type, service_id, created_at, updated_at
+         ) VALUES ($1,$2,$3,$4,$5,$6,$6) RETURNING id`,
+        [tenantId, customerId, input.source, input.workflowType, input.serviceId, now],
+      );
+      const leadId = String(lead.rows[0]?.id);
+      const conversation = await client.query(
+        `INSERT INTO conversations (
+           tenant_id, customer_id, lead_id, channel, created_at, updated_at
+         ) VALUES ($1,$2,$3,$4,$5,$5) RETURNING id`,
+        [tenantId, customerId, leadId, input.channel, now],
+      );
+      const conversationId = String(conversation.rows[0]?.id);
+      await client.query(
+        'UPDATE leads SET conversation_id = $3, updated_at = $4 WHERE tenant_id = $1 AND id = $2',
+        [tenantId, leadId, conversationId, now],
+      );
+      const opportunity = await client.query(
+        `INSERT INTO opportunities (
+           tenant_id, customer_id, lead_id, conversation_id, source, opportunity_type,
+           estimated_value_cents, autonomy_level, recovery_state, next_action_at,
+           created_at, updated_at
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'AT_RISK',$9,$9,$9)
+         RETURNING id`,
+        [tenantId, customerId, leadId, conversationId, input.source, input.opportunityType,
+          input.estimatedValueCents, input.autonomyLevel, now],
+      );
+      const opportunityId = String(opportunity.rows[0]?.id);
+      await this.insertAudit(client, tenantId, actor, 'opportunity.created', 'opportunity', opportunityId, now);
+      return { opportunityId, leadId, conversationId, replayed: false };
     });
   }
 
@@ -649,6 +1503,25 @@ export class PostgresProductionStore implements ProductionStore {
   ): Promise<RevenueLedgerEntry> {
     return this.transaction(async (client) => {
       await this.assertJourneyContext(client, tenantId, entry.customerId, entry.leadId, entry.conversationId);
+      const opportunityContext = await client.query(
+        `SELECT id, attribution_type, attribution_reason FROM opportunities
+         WHERE tenant_id = $1 AND customer_id = $2 AND lead_id = $3 AND conversation_id = $4
+           AND ($5::uuid IS NULL OR id = $5)
+         ORDER BY created_at DESC LIMIT 1`,
+        [tenantId, entry.customerId, entry.leadId, entry.conversationId, entry.opportunityId ?? null],
+      );
+      const resolvedOpportunityId = opportunityContext.rows[0]
+        ? String(opportunityContext.rows[0].id)
+        : null;
+      const resolvedAttributionType = entry.attributionType
+        ?? opportunityContext.rows[0]?.attribution_type
+        ?? null;
+      const resolvedAttributionReason = entry.attributionReason
+        ?? opportunityContext.rows[0]?.attribution_reason
+        ?? null;
+      if (entry.opportunityId && !resolvedOpportunityId) {
+        throw new ApiError(422, 'INVALID_OPPORTUNITY_CONTEXT', 'Revenue event is linked to a different opportunity');
+      }
       if (['collected', 'refunded', 'recovered'].includes(entry.stage)) {
         const payment = await client.query(
           `SELECT amount_cents, kind FROM payments
@@ -676,14 +1549,38 @@ export class PostgresProductionStore implements ProductionStore {
       const result = await client.query(
         `INSERT INTO revenue_ledger_events
           (tenant_id, customer_id, lead_id, conversation_id, payment_id, stage,
-           amount_cents, causation_key, occurred_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+           amount_cents, causation_key, occurred_at, opportunity_id, event_type,
+           attribution_type, attribution_reason)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
          RETURNING id, tenant_id, customer_id, lead_id, conversation_id, payment_id,
-                   stage, amount_cents, causation_key, occurred_at`,
+                   stage, amount_cents, causation_key, occurred_at, opportunity_id,
+                   event_type, attribution_type, attribution_reason`,
         [tenantId, entry.customerId, entry.leadId, entry.conversationId, entry.paymentId,
-          entry.stage, entry.amountCents, entry.causationKey, now],
+          entry.stage, entry.amountCents, entry.causationKey, now, resolvedOpportunityId,
+          entry.eventType ?? revenueEventTypeForStage(entry.stage), resolvedAttributionType,
+          resolvedAttributionReason],
       );
       const record = revenueRow(result.rows[0]);
+      if (resolvedOpportunityId) {
+        await client.query(
+          `UPDATE opportunities opportunity SET
+             revenue_attributed_cents = financial.net_collected,
+             attribution_type = COALESCE($3::revenue_attribution_type, opportunity.attribution_type),
+             attribution_reason = COALESCE($4, opportunity.attribution_reason),
+             updated_at = $5
+           FROM (
+             SELECT GREATEST(0,
+               COALESCE(SUM(amount_cents) FILTER (WHERE stage = 'collected'), 0)
+               - COALESCE(SUM(amount_cents) FILTER (WHERE stage = 'refunded'), 0)
+             )::bigint AS net_collected
+             FROM revenue_ledger_events
+             WHERE tenant_id = $1 AND opportunity_id = $2
+           ) financial
+           WHERE opportunity.tenant_id = $1 AND opportunity.id = $2`,
+          [tenantId, resolvedOpportunityId, resolvedAttributionType,
+            resolvedAttributionReason, now],
+        );
+      }
       await this.insertAudit(client, tenantId, actor, 'revenue.appended', 'revenue_event', record.id, now);
       return record;
     });
@@ -697,10 +1594,20 @@ export class PostgresProductionStore implements ProductionStore {
   ): Promise<FollowUpJobRecord> {
     return this.transaction(async (client) => {
       const context = await client.query(
-        `SELECT id FROM conversations WHERE tenant_id = $1 AND id = $2 AND customer_id = $3`,
+        `SELECT conversation.id, conversation.mode, customer.opted_out, customer.operational_allowed
+         FROM conversations conversation
+         JOIN customers customer
+           ON customer.tenant_id = conversation.tenant_id AND customer.id = conversation.customer_id
+         WHERE conversation.tenant_id = $1 AND conversation.id = $2 AND conversation.customer_id = $3`,
         [tenantId, input.conversationId, input.customerId],
       );
       if (context.rowCount !== 1) throw new ApiError(422, 'INVALID_FOLLOW_UP_CONTEXT', 'Follow-up context is invalid');
+      if (context.rows[0].opted_out || !context.rows[0].operational_allowed) {
+        throw new ApiError(409, 'FOLLOW_UP_CONTACT_BLOCKED', 'Customer communication is not allowed');
+      }
+      if (context.rows[0].mode !== 'AI_ACTIVE') {
+        throw new ApiError(409, 'FOLLOW_UP_AUTOMATION_PAUSED', 'Conversation automation is not active');
+      }
       const result = await client.query(
         `INSERT INTO follow_up_jobs
           (tenant_id, conversation_id, customer_id, channel, reason, due_at,
@@ -740,22 +1647,11 @@ export class PostgresProductionStore implements ProductionStore {
   }
 
   async claimDueFollowUp(workerId: string, now: string, leaseUntil: string): Promise<FollowUpJobRecord | null> {
+    this.assertExecutionMode('system');
     return this.transaction(async (client) => {
       const result = await client.query(
-        `WITH candidate AS (
-           SELECT id FROM follow_up_jobs
-           WHERE status IN ('scheduled', 'failed', 'leased')
-             AND CASE WHEN status = 'leased' THEN lease_expires_at <= $1 ELSE COALESCE(retry_at, due_at) <= $1 END
-             AND attempt_count < max_attempts
-           ORDER BY COALESCE(retry_at, due_at), created_at
-           FOR UPDATE SKIP LOCKED
-           LIMIT 1
-         )
-         UPDATE follow_up_jobs job
-         SET status = 'leased', lease_owner = $2, lease_expires_at = $3, updated_at = $1
-         FROM candidate WHERE job.id = candidate.id
-         RETURNING job.*`,
-        [now, workerId, leaseUntil],
+        'SELECT * FROM public.claim_follow_up_job($1, $2, $3)',
+        [workerId, now, leaseUntil],
       );
       return result.rows[0] ? followUpRow(result.rows[0]) : null;
     });
@@ -845,6 +1741,68 @@ export class PostgresProductionStore implements ProductionStore {
           waitingSince: asIso(row.last_customer_message_at),
         })) };
       }
+      if (input.tool === 'GET_REVENUE_AT_RISK') {
+        mutationResult = { commandCenter: await this.getRevenueCommandCenter(tenantId) };
+      }
+      if (input.tool === 'GET_PRIORITY_OPPORTUNITIES') {
+        const opportunities = await client.query(
+          `SELECT * FROM opportunities
+           WHERE tenant_id = $1
+             AND recovery_state IN ('AT_RISK','RECOVERY_ACTIVE','WAITING_FOR_CUSTOMER')
+           ORDER BY recovery_score DESC, estimated_value_cents DESC NULLS LAST
+           LIMIT 25`,
+          [tenantId],
+        );
+        mutationResult = { opportunities: opportunities.rows.map(opportunityRow) };
+      }
+      if (input.tool === 'GET_HUMAN_REQUIRED_OPPORTUNITIES') {
+        const opportunities = await client.query(
+          `SELECT * FROM opportunities
+           WHERE tenant_id = $1 AND recovery_state = 'HUMAN_REQUIRED'
+           ORDER BY estimated_value_cents DESC NULLS LAST, updated_at DESC
+           LIMIT 100`,
+          [tenantId],
+        );
+        mutationResult = { opportunities: opportunities.rows.map(opportunityRow) };
+      }
+      if (input.tool === 'EXPLAIN_OPPORTUNITY_PRIORITY') {
+        const opportunityId = typeof input.arguments.opportunityId === 'string'
+          ? input.arguments.opportunityId
+          : '';
+        const opportunity = await client.query(
+          'SELECT * FROM opportunities WHERE tenant_id = $1 AND id = $2',
+          [tenantId, opportunityId],
+        );
+        if (!opportunity.rows[0]) throw new ApiError(404, 'RESOURCE_NOT_FOUND', 'The requested resource was not found');
+        const record = opportunityRow(opportunity.rows[0]);
+        mutationResult = {
+          opportunityId,
+          scores: record.scores,
+          recoveryState: record.recoveryState,
+          valueCents: record.estimatedValueCents,
+        };
+      }
+      if (input.tool === 'PREPARE_OPPORTUNITY_RECOVERY') {
+        const opportunityId = typeof input.arguments.opportunityId === 'string'
+          ? input.arguments.opportunityId
+          : '';
+        if (!opportunityId) throw new ApiError(400, 'INVALID_TOOL_ARGUMENTS', 'An opportunity is required');
+        const evaluation = await this.evaluateOpportunityRecovery(
+          tenantId,
+          opportunityId,
+          actor,
+          `${input.idempotencyKey}:recovery`,
+          now,
+        );
+        const action = evaluation.action.status === 'WAITING_APPROVAL'
+          ? await this.approveRecoveryAction(tenantId, opportunityId, evaluation.action.id, actor, now)
+          : evaluation.action;
+        mutationResult = {
+          decision: evaluation.decision,
+          action,
+          deliveryState: 'PREPARED_ONLY',
+        };
+      }
       if (input.tool === 'PREPARE_REACTIVATION') {
         const leadId = typeof input.arguments.leadId === 'string' ? input.arguments.leadId : null;
         if (!leadId) throw new ApiError(400, 'INVALID_TOOL_ARGUMENTS', 'A lead is required');
@@ -900,7 +1858,8 @@ export class PostgresProductionStore implements ProductionStore {
   }
 
   async findWebhookEndpoint(provider: string, endpointId: string): Promise<WebhookEndpoint | null> {
-    const result = await this.pool.query(
+    this.assertExecutionMode('system');
+    const result = await this.query(
       `SELECT tenant_id, provider, webhook_endpoint_id, signing_secret_reference, enabled
        FROM connector_configurations
        WHERE provider = $1 AND webhook_endpoint_id = $2`,
@@ -924,7 +1883,8 @@ export class PostgresProductionStore implements ProductionStore {
     payloadHash: string,
     now: string,
   ): Promise<WebhookEventRecord> {
-    const inserted = await this.pool.query(
+    this.assertExecutionMode('system');
+    const inserted = await this.query(
       `INSERT INTO webhook_events
         (tenant_id, provider, provider_event_id, received_at, verified, payload_hash)
        VALUES ($1,$2,$3,$4,true,$5)
@@ -933,7 +1893,7 @@ export class PostgresProductionStore implements ProductionStore {
       [endpoint.tenantId, endpoint.provider, providerEventId, now, payloadHash],
     );
     if (inserted.rows[0]) return webhookRow(inserted.rows[0], false);
-    const existing = await this.pool.query(
+    const existing = await this.query(
       `SELECT * FROM webhook_events WHERE provider = $1 AND provider_event_id = $2`,
       [endpoint.provider, providerEventId],
     );
@@ -945,7 +1905,8 @@ export class PostgresProductionStore implements ProductionStore {
   }
 
   async markWebhookProcessed(eventId: string, now: string): Promise<void> {
-    await this.pool.query(
+    this.assertExecutionMode('system');
+    await this.query(
       `UPDATE webhook_events
        SET processing_state = 'processed', processed_at = $2,
            processing_attempt_count = processing_attempt_count + 1, next_attempt_at = NULL
@@ -963,6 +1924,7 @@ export class PostgresProductionStore implements ProductionStore {
     retryAt: string | null,
     now: string,
   ): Promise<void> {
+    this.assertExecutionMode('system');
     await this.transaction(async (client) => {
       const locked = await client.query(
         `SELECT * FROM follow_up_jobs WHERE id = $1 FOR UPDATE`,
@@ -1042,11 +2004,36 @@ export class PostgresProductionStore implements ProductionStore {
     );
   }
 
+  private async query<Row extends QueryResultRow = QueryResultRow>(
+    text: string,
+    values?: unknown[],
+  ): Promise<QueryResult<Row>> {
+    if (!this.client || this.executionMode === 'unscoped') {
+      throw new Error('PostgreSQL access requires an explicit authenticated or system execution context');
+    }
+    return this.client.query<Row>(text, values);
+  }
+
   private async transaction<T>(operation: (client: PoolClient) => Promise<T>): Promise<T> {
+    if (!this.client || this.executionMode === 'unscoped') {
+      throw new Error('PostgreSQL access requires an explicit authenticated or system execution context');
+    }
+    try {
+      return await operation(this.client);
+    } catch (error) {
+      throw mapPostgresError(error);
+    }
+  }
+
+  private async executionTransaction<T>(
+    mode: Exclude<DatabaseExecutionMode, 'unscoped'>,
+    operation: (client: PoolClient, store: PostgresProductionStore) => Promise<T>,
+  ): Promise<T> {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
-      const result = await operation(client);
+      const scopedStore = new PostgresProductionStore(this.pool, client, mode);
+      const result = await operation(client, scopedStore);
       await client.query('COMMIT');
       return result;
     } catch (error) {
@@ -1054,6 +2041,18 @@ export class PostgresProductionStore implements ProductionStore {
       throw mapPostgresError(error);
     } finally {
       client.release();
+    }
+  }
+
+  private assertRootExecutionBoundary(): void {
+    if (this.client || this.executionMode !== 'unscoped') {
+      throw new Error('Nested database execution contexts are not allowed');
+    }
+  }
+
+  private assertExecutionMode(expected: Exclude<DatabaseExecutionMode, 'unscoped'>): void {
+    if (this.executionMode !== expected) {
+      throw new Error(`Database operation requires ${expected} execution context`);
     }
   }
 }
@@ -1186,7 +2185,7 @@ function invitationRow(row: Record<string, unknown> | undefined): OrganizationIn
 
 function revenueRow(row: Record<string, unknown> | undefined): RevenueLedgerEntry {
   if (!row) throw new Error('Revenue insert did not return a row');
-  return {
+  const base: RevenueLedgerEntry = {
     id: String(row.id),
     tenantId: String(row.tenant_id),
     customerId: String(row.customer_id),
@@ -1198,6 +2197,175 @@ function revenueRow(row: Record<string, unknown> | undefined): RevenueLedgerEntr
     causationKey: String(row.causation_key),
     occurredAt: asIso(row.occurred_at),
   };
+  if ('opportunity_id' in row) base.opportunityId = nullableString(row.opportunity_id);
+  if ('event_type' in row) base.eventType = row.event_type as RevenueLedgerEntry['eventType'];
+  if ('attribution_type' in row) base.attributionType = row.attribution_type as RevenueLedgerEntry['attributionType'];
+  if ('attribution_reason' in row) base.attributionReason = nullableString(row.attribution_reason);
+  return base;
+}
+
+function opportunityRow(row: Record<string, unknown>): OpportunityRecord {
+  const reasonCodes = Array.isArray(row.score_reason_codes)
+    ? row.score_reason_codes.map(String)
+    : [];
+  const version = String(row.score_version ?? 'unscored');
+  const score = (value: unknown, label: string) => ({
+    value: Number(value ?? 0),
+    reasonCodes,
+    explanation: `${label} calculated by ${version}`,
+    version,
+  });
+  return {
+    id: String(row.id),
+    tenantId: String(row.tenant_id),
+    customerId: String(row.customer_id),
+    leadId: nullableString(row.lead_id),
+    conversationId: nullableString(row.conversation_id),
+    source: normalizeOpportunitySource(String(row.source)),
+    opportunityType: row.opportunity_type as OpportunityRecord['opportunityType'],
+    estimatedValueCents: row.estimated_value_cents === null || row.estimated_value_cents === undefined
+      ? null
+      : Number(row.estimated_value_cents),
+    currency: String(row.currency),
+    scores: {
+      intent: score(row.intent_score, 'Intent'),
+      revenue: score(row.revenue_score, 'Revenue'),
+      recovery: score(row.recovery_score, 'Recovery'),
+      urgency: score(row.urgency_score, 'Urgency'),
+    },
+    status: row.status as OpportunityRecord['status'],
+    recoveryState: row.recovery_state as OpportunityRecord['recoveryState'],
+    autonomyLevel: row.autonomy_level as OpportunityRecord['autonomyLevel'],
+    assignedHumanId: nullableString(row.assigned_human_id),
+    lastCustomerActivityAt: nullableIso(row.last_customer_activity_at),
+    lastBusinessActivityAt: nullableIso(row.last_business_activity_at),
+    nextActionAt: nullableIso(row.next_action_at),
+    bookingId: nullableString(row.booking_id),
+    estimateId: nullableString(row.estimate_id),
+    jobId: nullableString(row.job_id),
+    wonAt: nullableIso(row.won_at),
+    lostAt: nullableIso(row.lost_at),
+    lostReason: nullableString(row.lost_reason),
+    revenueAttributedCents: Number(row.revenue_attributed_cents ?? 0),
+    attributionType: row.attribution_type as OpportunityRecord['attributionType'],
+    attributionReason: nullableString(row.attribution_reason),
+    createdAt: asIso(row.created_at),
+    updatedAt: asIso(row.updated_at),
+  };
+}
+
+function recoveryDecisionRow(row: Record<string, unknown>): RecoveryDecisionRecord {
+  const reasonCodes = Array.isArray(row.reason_codes) ? row.reason_codes.map(String) : [];
+  const version = String(row.score_version);
+  const score = (value: unknown, label: string) => ({
+    value: Number(value),
+    reasonCodes,
+    explanation: `${label} calculated by ${version}`,
+    version,
+  });
+  return {
+    id: String(row.id),
+    tenantId: String(row.tenant_id),
+    opportunityId: String(row.opportunity_id),
+    playType: row.play_type as RecoveryDecisionRecord['playType'],
+    eligible: Boolean(row.eligible),
+    suppressionReason: nullableString(row.suppression_reason),
+    scores: {
+      intent: score(row.intent_score, 'Intent'),
+      revenue: score(row.revenue_score, 'Revenue'),
+      recovery: score(row.recovery_score, 'Recovery'),
+      urgency: score(row.urgency_score, 'Urgency'),
+    },
+    nextBestAction: {
+      kind: row.next_action_kind as RecoveryDecisionRecord['nextBestAction']['kind'],
+      reasonCode: reasonCodes[0] ?? String(row.suppression_reason ?? 'RECOVERY_DECISION'),
+      label: String(row.next_action_label),
+      channel: row.action_channel as RecoveryDecisionRecord['nextBestAction']['channel'],
+      requiresApproval: Boolean(row.requires_approval),
+      dueAt: nullableIso(row.due_at),
+    },
+    policyVersion: String(row.policy_version),
+    idempotencyKey: String(row.idempotency_key),
+    decidedAt: asIso(row.decided_at),
+    executedAt: nullableIso(row.executed_at),
+    executionState: row.execution_state as RecoveryDecisionRecord['executionState'],
+  };
+}
+
+function recoveryActionRow(row: Record<string, unknown> | undefined): RecoveryActionRecord {
+  if (!row) throw new Error('Recovery action query did not return a row');
+  return {
+    id: String(row.id),
+    tenantId: String(row.tenant_id),
+    opportunityId: String(row.opportunity_id),
+    decisionId: String(row.decision_id),
+    actionKind: row.action_kind as RecoveryActionRecord['actionKind'],
+    channel: row.channel as RecoveryActionRecord['channel'],
+    status: row.status as RecoveryActionRecord['status'],
+    requiresApproval: Boolean(row.requires_approval),
+    requestedBy: row.requested_by as RecoveryActionRecord['requestedBy'],
+    idempotencyKey: String(row.idempotency_key),
+    validUntil: nullableIso(row.valid_until),
+    approvedByUserId: nullableString(row.approved_by_user_id),
+    approvedAt: nullableIso(row.approved_at),
+    startedAt: nullableIso(row.started_at),
+    completedAt: nullableIso(row.completed_at),
+    cancelledAt: nullableIso(row.cancelled_at),
+    lastError: nullableString(row.last_error),
+    deliveryState: row.delivery_state as RecoveryActionRecord['deliveryState'],
+    createdAt: asIso(row.created_at),
+    updatedAt: asIso(row.updated_at),
+  };
+}
+
+function opportunityObservationRow(
+  row: Record<string, unknown>,
+  opportunity: OpportunityRecord,
+  now: string,
+): OpportunityObservation {
+  return {
+    now,
+    source: opportunity.source,
+    status: opportunity.status,
+    recoveryState: opportunity.recoveryState,
+    opportunityType: opportunity.opportunityType,
+    estimatedValueCents: opportunity.estimatedValueCents,
+    averageTicketCents: null,
+    lastCustomerActivityAt: nullableIso(row.conversation_customer_activity) ?? opportunity.lastCustomerActivityAt,
+    lastBusinessActivityAt: nullableIso(row.conversation_business_activity) ?? opportunity.lastBusinessActivityAt,
+    hasCustomerReply: row.conversation_customer_activity !== null && row.conversation_customer_activity !== undefined,
+    hasExplicitServiceIntent: opportunity.opportunityType !== 'OTHER',
+    hasBookingRequest: ['QUALIFIED', 'BOOKED'].includes(opportunity.status),
+    hasEstimate: opportunity.estimateId !== null,
+    estimateViewedCount: Number(row.estimate_view_count ?? 0),
+    estimateCreatedAt: nullableIso(row.estimate_created_at),
+    hasExplicitRejection: opportunity.status === 'LOST' && opportunity.lostReason === 'CUSTOMER_DECLINED',
+    hasActiveHandoff: row.conversation_mode === 'HUMAN_ACTIVE',
+    humanRequired: opportunity.recoveryState === 'HUMAN_REQUIRED',
+    optedOut: Boolean(row.opted_out),
+    operationalCommunicationAllowed: Boolean(row.operational_allowed),
+    withinContactWindow: Boolean(row.within_contact_window),
+    followUpAttempts: Number(row.follow_up_attempts ?? 0),
+    hasOtherActiveOpportunity: Boolean(row.has_other_active_opportunity),
+  };
+}
+
+function normalizeOpportunitySource(source: string): OpportunitySource {
+  return ['MISSED_CALL', 'PHONE', 'WEBSITE_FORM', 'WHATSAPP', 'INSTAGRAM', 'EMAIL', 'IMPORT', 'MANUAL'].includes(source)
+    ? source as OpportunitySource
+    : 'OTHER';
+}
+
+function revenueEventTypeForStage(stage: RevenueLedgerEntry['stage']): NonNullable<RevenueLedgerEntry['eventType']> {
+  const types: Record<RevenueLedgerEntry['stage'], NonNullable<RevenueLedgerEntry['eventType']>> = {
+    potential: 'ESTIMATE_CREATED',
+    pipeline: 'POTENTIAL_REVENUE_AT_RISK',
+    booked: 'BOOKING_CREATED',
+    collected: 'PAYMENT_RECEIVED',
+    refunded: 'REFUND',
+    recovered: 'BOOKING_RECOVERED',
+  };
+  return types[stage];
 }
 
 function webhookRow(row: Record<string, unknown>, replayed: boolean): WebhookEventRecord {

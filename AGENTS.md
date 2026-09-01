@@ -53,6 +53,8 @@ Prefer focused application services over expanding `CloserService` or creating g
 
 - Keep demo/browser persistence and authenticated production data modes explicit; never silently mix them.
 - Treat JWT subject as identity, not tenant authority. Resolve active organization membership server-side for every tenant operation.
+- Execute every authenticated PostgreSQL request inside one transaction with `SET LOCAL ROLE closer_api` and transaction-local `app.user_id`; never use a session-global identity setting on pooled connections.
+- Keep worker/webhook database access inside the explicit `closer_system` context with only queue/webhook grants and policies. Both runtime roles remain `NOBYPASSRLS`.
 - Keep connector, AI, payment, mail, and webhook secrets server-only; no secret may use a `VITE_` variable.
 - Use PostgreSQL transactions, tenant-linked foreign keys, unique operation keys, and idempotency records for harmful retries.
 - Follow-up workers claim with a lease and `SKIP LOCKED`; live dispatch remains disabled until a connector is authorized.

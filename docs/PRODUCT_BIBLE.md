@@ -4,11 +4,11 @@
 
 This document is the primary strategic product reference for CLOSER. It defines what the product is, whom it serves, the outcomes it should optimize, and the sequence in which it should evolve. Architecture and implementation documents describe the verified system as it exists; when a forward-looking product statement conflicts with this document, this document governs.
 
-Phase 4.1A is a direction reset only. It does not change application behavior, domain rules, or the verified Phase 1–4 implementation.
+The current product wedge is an AI Revenue Recovery OS for owner-led HVAC businesses. The underlying platform remains tenant-safe and configurable for other service verticals; HVAC is the focused pilot operating model, not a business-name branch in code.
 
 ## Product definition
 
-CLOSER is a **lead-to-cash autopilot for service businesses**.
+CLOSER is a **lead-to-cash and revenue-recovery operating system for service businesses**, focused first on HVAC.
 
 > CLOSER takes every customer inquiry and continuously moves it toward the next best business action — until the customer books, approves, completes the service, and pays.
 
@@ -27,7 +27,7 @@ Every meaningful feature must do at least one of these:
 
 If a feature does neither, it is not a priority.
 
-CLOSER should optimize for fewer forgotten inquiries, faster useful responses, fewer stalled opportunities, more complete information, more completed bookings or accepted quotes, timely deposits and follow-ups, fewer unpaid balances, and fewer owner interventions.
+CLOSER should optimize for fewer forgotten inquiries, faster useful responses, fewer stalled opportunities, more complete information, more completed bookings or accepted estimates, timely deposits and follow-ups, fewer unpaid balances, and fewer owner interventions. Its commercial proof is validated revenue generated, recovered, assisted, or protected—not message volume.
 
 It should not optimize for AI-message volume, CRM-record volume, dashboard count, or vanity automation metrics.
 
@@ -42,7 +42,7 @@ CLOSER initially serves owner-led and small-team service businesses where:
 - appointments or jobs, deposits, completion, and payment all matter; and
 - owners currently coordinate much of the journey manually.
 
-The product remains one configurable, multi-tenant system with initial support for:
+The product remains one configurable, multi-tenant system. The first production pilot wedge is HVAC because missed calls, emergency intent, unsold estimates, booking recovery, and repeat seasonal service make recovery observable and measurable. Existing support remains for:
 
 - auto detailing, PPF, and automotive services;
 - beauty and aesthetics clinics; and
@@ -50,7 +50,27 @@ The product remains one configurable, multi-tenant system with initial support f
 
 It must not become a separate application per vertical. Service and business configuration determine behavior.
 
-Auto detailing and PPF are the strongest initial pilot candidate because the commercial path is concrete and measurable: vehicle → service → details/photos → quote → deposit → job → balance.
+The code must not branch on an HVAC company name. Service workflow, opportunity type, source, consent, autonomy policy, and recovery play configuration determine behavior.
+
+## Customer, lead, and opportunity
+
+- **Customer** is the durable person or account identity.
+- **Lead** records an acquisition/inquiry context and source.
+- **Opportunity** is one commercial need that can be scored, recovered, booked, estimated, won, lost, or stopped.
+
+One customer may have many opportunities over time. CLOSER never collapses a new repair, replacement estimate, and maintenance request into one mutable CRM record. Each active opportunity has one next best business action and independent intent, revenue, recovery, and urgency scores with explainable reason codes and a versioned deterministic policy.
+
+Opportunity statuses are `NEW`, `CONTACTING`, `ENGAGED`, `QUALIFIED`, `BOOKED`, `ESTIMATE`, `WON`, `LOST`, `SNOOZED`, and `DO_NOT_CONTACT`. Recovery state is separate: `NOT_AT_RISK`, `AT_RISK`, `RECOVERY_ACTIVE`, `WAITING_FOR_CUSTOMER`, `HUMAN_REQUIRED`, `RECOVERED`, `FAILED`, or `STOPPED`.
+
+## HVAC recovery plays
+
+The first four bounded plays are missed-call recovery, new-lead recovery, unsold-estimate recovery, and old-lead reactivation. They all follow one deterministic loop: observe verified state → score independent dimensions → decide a policy-safe action → prepare or execute only what autonomy permits → wait for new evidence.
+
+Opt-out, do-not-contact, explicit rejection, Human Takeover, invalid contact time, closed work, maximum attempts, and an existing active recovery suppress action. Live delivery remains disabled until a separately authorized connector exists.
+
+## Revenue attribution
+
+CLOSER distinguishes `GENERATED`, `RECOVERED`, `ASSISTED`, and `ORGANIC` attribution. Estimated opportunity value is revenue at risk, not cash. A booking is booked value, not collected money, and is not automatically CLOSER-recovered: material recovery evidence is required, prepared-only participation is assisted, and no meaningful intervention remains organic. Actual recovered revenue requires a validated collected payment linked to the opportunity; refunds reduce it. All attribution uses append-oriented revenue events, tenant-scoped causation keys, and a concise evidence reason.
 
 ## Core commercial journeys
 
@@ -126,11 +146,12 @@ The experience should answer:
 
 The recommended hierarchy is:
 
-1. **Today / Command Center**
-2. **Customers / Opportunities**
-3. **Calendar / Jobs**
-4. **Money**
-5. **More**
+1. **Revenue / Command Center**
+2. **Opportunities**
+3. **Inbox**
+4. **Bookings / Jobs**
+5. **Customers**
+6. **Recovery Plays / Connections / Settings**
 
 Conversations or Inbox may live under More or open contextually from a customer or action. Exact navigation should be tested, but messaging must not define the product hierarchy.
 

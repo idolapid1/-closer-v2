@@ -11,7 +11,10 @@ import {
   ProductionInboxPage,
   ProductionMoneyPage,
   ProductionMorePage,
-  ProductionTodayPage,
+  ProductionOpportunitiesPage,
+  ProductionOpportunityPage,
+  ProductionRecoveryPage,
+  ProductionRevenuePage,
   ProductionWorkPage,
 } from '../features/production/ProductionPages';
 import { OwnerShell } from '../components/product/OwnerShell';
@@ -55,15 +58,23 @@ function ProductionRoutes() {
         <Route path="*" element={<ProductionOnboardingPage />} />
       ) : (
         <Route element={<ProductionLayout />}>
-          <Route index element={<Navigate to="/actions" replace />} />
-          <Route path="actions" element={<ProductionTodayPage />} />
+          <Route index element={<Navigate to="/revenue" replace />} />
+          <Route path="revenue" element={<ProductionRevenuePage />} />
+          <Route path="actions" element={<Navigate to="/revenue" replace />} />
+          <Route path="opportunities" element={<ProductionOpportunitiesPage />} />
+          <Route path="opportunity/:id" element={<ProductionOpportunityPage />} />
           <Route path="customers" element={<ProductionCustomersPage />} />
           <Route path="customer/:id" element={<ProductionCustomerPage />} />
           <Route path="inbox" element={<ProductionInboxPage />} />
-          <Route path="work" element={<ProductionWorkPage />} />
+          <Route path="bookings" element={<ProductionWorkPage mode="bookings" />} />
+          <Route path="jobs" element={<ProductionWorkPage mode="jobs" />} />
+          <Route path="recovery" element={<ProductionRecoveryPage />} />
+          <Route path="connections" element={<ProductionMorePage section="connections" />} />
+          <Route path="settings" element={<ProductionMorePage section="settings" />} />
+          <Route path="work" element={<Navigate to="/bookings" replace />} />
           <Route path="money" element={<ProductionMoneyPage />} />
-          <Route path="more" element={<ProductionMorePage />} />
-          <Route path="*" element={<Navigate to="/actions" replace />} />
+          <Route path="more" element={<Navigate to="/settings" replace />} />
+          <Route path="*" element={<Navigate to="/revenue" replace />} />
         </Route>
       )}
     </Routes>
@@ -79,6 +90,7 @@ function ProductionLayout() {
       onBusinessChange={owner.selectTenant}
       switcherLabel="עסק פעיל"
       statusText="מחובר לנתוני הייצור"
+      navigationMode="revenue"
     />
   );
 }

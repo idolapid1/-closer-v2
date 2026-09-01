@@ -1,7 +1,10 @@
 import type {
   ProductionCopilotExecutionContract,
   ProductionCopilotResultContract,
+  ProductionConnectorContract,
   ProductionCustomerContract,
+  ProductionCustomerResponseContract,
+  ProductionCustomerResponseResultContract,
   ProductionCustomerWorkspaceContract,
   ProductionFollowUpContract,
   ProductionFollowUpCreationContract,
@@ -9,6 +12,13 @@ import type {
   ProductionJourneyCreationContract,
   ProductionJourneyResultContract,
   ProductionOwnerSnapshotContract,
+  ProductionOpportunityContract,
+  ProductionOpportunityCreationContract,
+  ProductionOpportunityCreationResultContract,
+  ProductionOpportunityDetailContract,
+  ProductionRecoveryActionContract,
+  ProductionRecoveryDecisionContract,
+  ProductionRevenueCommandCenterContract,
   ProductionTenantContract,
 } from '../../types/productionApi';
 
@@ -49,11 +59,90 @@ export class ProductionApiClient {
     return response.customers;
   }
 
+  async listConnectorConfigurations(tenantId: string): Promise<ProductionConnectorContract[]> {
+    const response = await this.request<{ connectors: ProductionConnectorContract[] }>(
+      `/api/v1/tenants/${encodeURIComponent(tenantId)}/connectors`,
+    );
+    return response.connectors;
+  }
+
   async getOwnerSnapshot(tenantId: string): Promise<ProductionOwnerSnapshotContract> {
     const response = await this.request<{ snapshot: ProductionOwnerSnapshotContract }>(
       `/api/v1/tenants/${encodeURIComponent(tenantId)}/owner-snapshot`,
     );
     return response.snapshot;
+  }
+
+  async listOpportunities(tenantId: string, limit = 50, offset = 0): Promise<ProductionOpportunityContract[]> {
+    const response = await this.request<{ opportunities: ProductionOpportunityContract[] }>(
+      `/api/v1/tenants/${encodeURIComponent(tenantId)}/opportunities?limit=${limit}&offset=${offset}`,
+    );
+    return response.opportunities;
+  }
+
+  async getOpportunity(tenantId: string, opportunityId: string): Promise<ProductionOpportunityContract> {
+    const response = await this.request<{ opportunity: ProductionOpportunityContract }>(
+      `/api/v1/tenants/${encodeURIComponent(tenantId)}/opportunities/${encodeURIComponent(opportunityId)}`,
+    );
+    return response.opportunity;
+  }
+
+  async getOpportunityDetail(tenantId: string, opportunityId: string): Promise<ProductionOpportunityDetailContract> {
+    return this.request(
+      `/api/v1/tenants/${encodeURIComponent(tenantId)}/opportunities/${encodeURIComponent(opportunityId)}`,
+    );
+  }
+
+  async getRevenueCommandCenter(tenantId: string): Promise<ProductionRevenueCommandCenterContract> {
+    const response = await this.request<{ commandCenter: ProductionRevenueCommandCenterContract }>(
+      `/api/v1/tenants/${encodeURIComponent(tenantId)}/revenue-command-center`,
+    );
+    return response.commandCenter;
+  }
+
+  async evaluateOpportunityRecovery(
+    tenantId: string,
+    opportunityId: string,
+    idempotencyKey: string,
+  ): Promise<{ decision: ProductionRecoveryDecisionContract; action: ProductionRecoveryActionContract; replayed: boolean }> {
+    return this.request(
+      `/api/v1/tenants/${encodeURIComponent(tenantId)}/opportunities/${encodeURIComponent(opportunityId)}/evaluate-recovery`,
+      { method: 'POST', body: JSON.stringify({ idempotencyKey }) },
+    );
+  }
+
+  async approveRecoveryAction(
+    tenantId: string,
+    opportunityId: string,
+    actionId: string,
+    idempotencyKey: string,
+  ): Promise<{ action: ProductionRecoveryActionContract; replayed: boolean }> {
+    return this.request(
+      `/api/v1/tenants/${encodeURIComponent(tenantId)}/opportunities/${encodeURIComponent(opportunityId)}/recovery-actions/${encodeURIComponent(actionId)}/approve`,
+      { method: 'POST', body: JSON.stringify({ idempotencyKey }) },
+    );
+  }
+
+  async recordCustomerOptOut(
+    tenantId: string,
+    customerId: string,
+    idempotencyKey: string,
+  ): Promise<{ customerId: string; stoppedOpportunities: number; cancelledFollowUps: number; replayed: boolean }> {
+    return this.request(
+      `/api/v1/tenants/${encodeURIComponent(tenantId)}/customers/${encodeURIComponent(customerId)}/opt-out`,
+      { method: 'POST', body: JSON.stringify({ idempotencyKey }) },
+    );
+  }
+
+  async recordCustomerResponse(
+    tenantId: string,
+    opportunityId: string,
+    input: ProductionCustomerResponseContract,
+  ): Promise<ProductionCustomerResponseResultContract> {
+    return this.request(
+      `/api/v1/tenants/${encodeURIComponent(tenantId)}/opportunities/${encodeURIComponent(opportunityId)}/customer-responses`,
+      { method: 'POST', body: JSON.stringify(input) },
+    );
   }
 
   async getCustomerWorkspace(
@@ -81,6 +170,17 @@ export class ProductionApiClient {
       method: 'POST',
       body: JSON.stringify(input),
     });
+  }
+
+  async createOpportunity(
+    tenantId: string,
+    customerId: string,
+    input: ProductionOpportunityCreationContract,
+  ): Promise<ProductionOpportunityCreationResultContract> {
+    return this.request(
+      `/api/v1/tenants/${encodeURIComponent(tenantId)}/customers/${encodeURIComponent(customerId)}/opportunities`,
+      { method: 'POST', body: JSON.stringify(input) },
+    );
   }
 
   async scheduleFollowUp(

@@ -6,6 +6,8 @@ import type {
   CopilotExecutionInput,
   CopilotExecutionResult,
   CustomerRecord,
+  CustomerResponseInput,
+  CustomerResponseResult,
   CustomerWorkspaceRecord,
   FollowUpJobRecord,
   JourneyCreationInput,
@@ -17,6 +19,8 @@ import type {
   PaymentCreationInput,
   PaymentCreationResult,
   OwnerSnapshotRecord,
+  OpportunityCreationInput,
+  OpportunityCreationResult,
   RevenueLedgerEntry,
   RevenueSummary,
   TenantProvisionInput,
@@ -24,6 +28,13 @@ import type {
   WebhookEndpoint,
   WebhookEventRecord,
 } from '../domain/model.js';
+import type {
+  OpportunityRecord,
+  OpportunityDetailRecord,
+  RecoveryActionRecord,
+  RecoveryEvaluationRecord,
+  RevenueCommandCenterRecord,
+} from '../domain/opportunity.js';
 
 export type IdempotencyBeginResult =
   | { state: 'started' }
@@ -31,7 +42,27 @@ export type IdempotencyBeginResult =
   | { state: 'conflict' }
   | { state: 'in_progress' };
 
+export type SystemDatabasePurpose = 'follow-up-worker' | 'webhook-ingestion';
+
+export interface AuthenticatedStoreExecutionOptions {
+  /**
+   * A verified authentication subject may reach CLOSER before an app_users row exists.
+   * The request boundary creates that row from the verified identity before setting RLS context.
+   */
+  provisionAppUser?: boolean;
+}
+
 export interface ProductionStore {
+  runAsAuthenticated<T>(
+    actor: AuthenticatedIdentity,
+    operation: (store: ProductionStore) => Promise<T>,
+    options?: AuthenticatedStoreExecutionOptions,
+  ): Promise<T>;
+  runAsSystem<T>(
+    purpose: SystemDatabasePurpose,
+    operation: (store: ProductionStore) => Promise<T>,
+  ): Promise<T>;
+
   provisionTenant(
     actor: AuthenticatedIdentity,
     input: TenantProvisionInput,
@@ -40,6 +71,37 @@ export interface ProductionStore {
   listMemberships(userId: string): Promise<OrganizationMembership[]>;
   getMembership(userId: string, tenantId: string): Promise<OrganizationMembership | null>;
   listCustomers(tenantId: string): Promise<CustomerRecord[]>;
+  listOpportunities(tenantId: string, limit?: number, offset?: number): Promise<OpportunityRecord[]>;
+  getOpportunity(tenantId: string, opportunityId: string): Promise<OpportunityRecord | null>;
+  getOpportunityDetail(tenantId: string, opportunityId: string): Promise<OpportunityDetailRecord | null>;
+  getRevenueCommandCenter(tenantId: string): Promise<RevenueCommandCenterRecord>;
+  evaluateOpportunityRecovery(
+    tenantId: string,
+    opportunityId: string,
+    actor: AuthenticatedIdentity,
+    idempotencyKey: string,
+    now: string,
+  ): Promise<RecoveryEvaluationRecord>;
+  approveRecoveryAction(
+    tenantId: string,
+    opportunityId: string,
+    actionId: string,
+    actor: AuthenticatedIdentity,
+    now: string,
+  ): Promise<RecoveryActionRecord>;
+  recordCustomerOptOut(
+    tenantId: string,
+    customerId: string,
+    actor: AuthenticatedIdentity,
+    now: string,
+  ): Promise<{ customerId: string; stoppedOpportunities: number; cancelledFollowUps: number }>;
+  recordCustomerResponse(
+    tenantId: string,
+    opportunityId: string,
+    actor: AuthenticatedIdentity,
+    input: CustomerResponseInput,
+    now: string,
+  ): Promise<CustomerResponseResult>;
   listConversations(tenantId: string): Promise<ConversationRecord[]>;
   listFollowUps(tenantId: string): Promise<FollowUpJobRecord[]>;
   getCustomerWorkspace(tenantId: string, customerId: string): Promise<CustomerWorkspaceRecord | null>;
@@ -99,6 +161,13 @@ export interface ProductionStore {
     input: JourneyCreationInput,
     now: string,
   ): Promise<JourneyCreationResult>;
+  createOpportunity(
+    tenantId: string,
+    customerId: string,
+    actor: AuthenticatedIdentity,
+    input: OpportunityCreationInput,
+    now: string,
+  ): Promise<OpportunityCreationResult>;
   createBooking(
     tenantId: string,
     actor: AuthenticatedIdentity,

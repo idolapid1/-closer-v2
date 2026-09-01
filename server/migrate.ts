@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readdir, readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { loadDatabaseConfig } from './config.js';
 import { createPostgresPool } from './infrastructure/postgres.js';
 
@@ -52,7 +53,7 @@ export async function runMigrations(databaseUrl: string): Promise<void> {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const config = loadDatabaseConfig();
   await runMigrations(config.DATABASE_URL);
 }
