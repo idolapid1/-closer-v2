@@ -1178,6 +1178,29 @@ describe('Copilot, webhook, and durable follow-up safety', () => {
     expect(migration).toContain('ENABLE ROW LEVEL SECURITY');
     expect(migration).not.toMatch(/access[_-]?token\s*=|private[_-]?key\s*=/i);
   });
+
+  it('keeps managed-Supabase runtime role hardening catalog-verified and fail-closed', async () => {
+    const migration = await readFile(
+      resolve(process.cwd(), 'server/migrations/0003_supabase_security_hardening.sql'),
+      'utf8',
+    );
+
+    expect(migration).not.toMatch(/ALTER ROLE\s+closer_(?:api|system)\s+WITH/i);
+    expect(migration).toContain('FROM pg_roles role_record');
+    for (const attribute of [
+      'rolcanlogin',
+      'rolsuper',
+      'rolcreatedb',
+      'rolcreaterole',
+      'rolinherit',
+      'rolreplication',
+      'rolbypassrls',
+    ]) {
+      expect(migration).toContain(`runtime_role.${attribute}`);
+    }
+    expect(migration).toContain("ERRCODE = '42501'");
+    expect(migration).toContain('Existing runtime role %I has unsafe attributes');
+  });
 });
 
 function harness(overrides: { followUps?: FollowUpJobRecord[] } = {}) {

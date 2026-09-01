@@ -138,13 +138,34 @@ export async function verifyDatabaseSchema(pool: Pool): Promise<DatabaseVerifica
   if (!claimFunction.rows[0]?.exists) throw new Error('Missing claim_follow_up_job function');
   if (!claimFunction.rows[0]?.search_path_fixed) throw new Error('claim_follow_up_job search_path is not fixed');
 
-  const roles = await pool.query<{ rolname: string; rolbypassrls: boolean; rolsuper: boolean }>(
-    `SELECT rolname, rolbypassrls, rolsuper FROM pg_roles
+  const roles = await pool.query<{
+    rolname: string;
+    rolcanlogin: boolean;
+    rolsuper: boolean;
+    rolcreatedb: boolean;
+    rolcreaterole: boolean;
+    rolinherit: boolean;
+    rolreplication: boolean;
+    rolbypassrls: boolean;
+  }>(
+    `SELECT rolname, rolcanlogin, rolsuper, rolcreatedb, rolcreaterole,
+            rolinherit, rolreplication, rolbypassrls
+     FROM pg_roles
      WHERE rolname IN ('closer_api', 'closer_system')`,
   );
   requireAll('runtime role', ['closer_api', 'closer_system'], roles.rows.map((row) => row.rolname));
-  if (roles.rows.some((row) => row.rolbypassrls || row.rolsuper)) {
-    throw new Error('CLOSER runtime roles must not bypass RLS or hold superuser privileges');
+  if (roles.rows.some((row) => (
+    row.rolcanlogin
+    || row.rolsuper
+    || row.rolcreatedb
+    || row.rolcreaterole
+    || row.rolinherit
+    || row.rolreplication
+    || row.rolbypassrls
+  ))) {
+    throw new Error(
+      'CLOSER runtime roles must be NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS',
+    );
   }
 
   const postgrestProtection = await pool.query<{ exposed: boolean }>(

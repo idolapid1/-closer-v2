@@ -2,17 +2,63 @@
 -- The connection login may be privileged enough to migrate, but every runtime transaction
 -- immediately SET LOCAL ROLEs into one of these constrained execution roles.
 DO $$
+DECLARE
+  runtime_role_name text;
+  runtime_role record;
 BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'closer_api') THEN
-    CREATE ROLE closer_api NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'closer_system') THEN
-    CREATE ROLE closer_system NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-  END IF;
-END $$;
+  FOREACH runtime_role_name IN ARRAY ARRAY['closer_api', 'closer_system'] LOOP
+    SELECT
+      role_record.rolname,
+      role_record.rolcanlogin,
+      role_record.rolsuper,
+      role_record.rolcreatedb,
+      role_record.rolcreaterole,
+      role_record.rolinherit,
+      role_record.rolreplication,
+      role_record.rolbypassrls
+    INTO runtime_role
+    FROM pg_roles role_record
+    WHERE role_record.rolname = runtime_role_name;
 
-ALTER ROLE closer_api WITH NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-ALTER ROLE closer_system WITH NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+    IF NOT FOUND THEN
+      EXECUTE format(
+        'CREATE ROLE %I NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS',
+        runtime_role_name
+      );
+      SELECT
+        role_record.rolname,
+        role_record.rolcanlogin,
+        role_record.rolsuper,
+        role_record.rolcreatedb,
+        role_record.rolcreaterole,
+        role_record.rolinherit,
+        role_record.rolreplication,
+        role_record.rolbypassrls
+      INTO STRICT runtime_role
+      FROM pg_roles role_record
+      WHERE role_record.rolname = runtime_role_name;
+    END IF;
+
+    -- Supabase's managed postgres role cannot restate protected role attributes with
+    -- ALTER ROLE. Existing roles are accepted only when the catalog proves that every
+    -- required least-privilege attribute is already safe; otherwise migration fails closed.
+    IF runtime_role.rolcanlogin
+      OR runtime_role.rolsuper
+      OR runtime_role.rolcreatedb
+      OR runtime_role.rolcreaterole
+      OR runtime_role.rolinherit
+      OR runtime_role.rolreplication
+      OR runtime_role.rolbypassrls
+    THEN
+      RAISE EXCEPTION USING
+        ERRCODE = '42501',
+        MESSAGE = format(
+          'Existing runtime role %I has unsafe attributes; expected NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS',
+          runtime_role_name
+        );
+    END IF;
+  END LOOP;
+END $$;
 
 DO $$
 BEGIN
